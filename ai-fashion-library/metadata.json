@@ -1,0 +1,6 @@
+{
+  "name": "의류 샘플 대여 관리 시스템",
+  "description": "의류 샘플 데이터 및 자동 연체 대응 메일링 에이전트가 탑재된 통합 대여 현황 어드민 워크스페이스",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

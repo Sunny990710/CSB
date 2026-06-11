@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+coverage/
+.DS_Store
+*.log
+
+# Environment / secrets (keep the example)
+.env
+.env.*
+!.env.example
+
+# Runtime data dir (if you point DATA_DIR at a local folder)
+/data/

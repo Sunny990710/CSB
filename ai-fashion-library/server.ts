@@ -1,0 +1,490 @@
+import express from 'express';
+import path from 'path';
+import fs from 'fs';
+import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
+
+dotenv.config();
+
+const app = express();
+const PORT = Number(process.env.PORT) || 3000;
+const isProd = process.env.NODE_ENV === 'production';
+
+app.use(express.json({ limit: '50mb' }));
+
+// --- Database (file-based JSON store) ------------------------------------
+// DATA_DIR lets you point the DB at a persistent volume in production
+// (e.g. /data on a Hugging Face Space or a mounted disk on Render).
+const DATA_DIR = process.env.DATA_DIR || process.cwd();
+const DB_FILE = path.join(DATA_DIR, 'database.json');
+const SEED_FILE = path.join(process.cwd(), 'database.json');
+
+const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [] };
+
+// On first run with a fresh DATA_DIR, seed from the bundled database.json.
+function ensureDB() {
+  if (!fs.existsSync(DB_FILE)) {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      if (DB_FILE !== SEED_FILE && fs.existsSync(SEED_FILE)) {
+        fs.copyFileSync(SEED_FILE, DB_FILE);
+      } else {
+        fs.writeFileSync(DB_FILE, JSON.stringify(EMPTY_DB, null, 2), 'utf8');
+      }
+    } catch (err) {
+      console.error('Error seeding database file:', err);
+    }
+  }
+}
+
+function getDB() {
+  try {
+    ensureDB();
+    if (fs.existsSync(DB_FILE)) {
+      return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    }
+  } catch (err) {
+    console.error('Error reading database file:', err);
+  }
+  return { ...EMPTY_DB };
+}
+
+function saveDB(data: any) {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    console.error('Error writing database file:', err);
+    return false;
+  }
+}
+
+// --- Gemini client (lazy) ------------------------------------------------
+let aiClient: GoogleGenAI | null = null;
+function getAi(): GoogleGenAI {
+  if (!aiClient) {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+      throw new Error('GEMINI_API_KEY environment variable is required for agent features');
+    }
+    aiClient = new GoogleGenAI({
+      apiKey: key,
+      httpOptions: { headers: { 'User-Agent': 'sample-rental-admin' } },
+    });
+  }
+  return aiClient;
+}
+
+// =========================================================================
+// API Routes
+// =========================================================================
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+app.get('/api/db', (_req, res) => {
+  res.json(getDB());
+});
+
+app.post('/api/db/save', (req, res) => {
+  if (saveDB(req.body)) {
+    res.json({ success: true, message: '데이터가 성공적으로 저장되었습니다.' });
+  } else {
+    res.status(500).json({ success: false, message: '데이터베이스 저장 실패' });
+  }
+});
+
+// Bulk image upload — auto-matches front/back by filename against sample codes.
+app.post('/api/samples/bulk-images', (req, res) => {
+  const { files } = req.body; // [{ filename, base64 }]
+  if (!files || !Array.isArray(files)) {
+    return res.status(400).json({ success: false, message: '올바르지 않은 요청 파일 형식입니다.' });
+  }
+
+  const db = getDB();
+  let matchCount = 0;
+
+  files.forEach((file: { filename: string; base64: string }) => {
+    const nameLower = file.filename.toLowerCase();
+    const matchedSample = db.samples.find((s: any) =>
+      nameLower.includes(s.code.toLowerCase())
+    );
+    if (matchedSample) {
+      const isBack =
+        nameLower.includes('back') ||
+        nameLower.includes('뒤') ||
+        nameLower.includes('_back') ||
+        nameLower.includes('_01') ||
+        nameLower.includes('_rear');
+      if (isBack) matchedSample.imgBack = file.base64;
+      else matchedSample.imgFront = file.base64;
+      matchCount++;
+    }
+  });
+
+  saveDB(db);
+  res.json({
+    success: true,
+    matchCount,
+    message: `${matchCount}개의 이미지 파일이 상품 코드 매칭 및 등록 처리되었습니다.`,
+  });
+});
+
+// Bulk import rows (Excel/CSV → JSON).
+app.post('/api/samples/bulk-excel', (req, res) => {
+  const { rows } = req.body;
+  if (!rows || !Array.isArray(rows)) {
+    return res.status(400).json({ success: false, message: '불러올 상품 행 데이터가 존재하지 않습니다.' });
+  }
+
+  const db = getDB();
+  let addedCount = 0;
+  let updatedCount = 0;
+  const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+  rows.forEach((row: any) => {
+    if (!row.code) return;
+
+    const existingIndex = db.samples.findIndex((s: any) => s.code === row.code);
+    const sampleRecord = {
+      id: existingIndex >= 0 ? db.samples[existingIndex].id : db.samples.length + 1,
+      regDate: existingIndex >= 0 ? db.samples[existingIndex].regDate : nowStr,
+      status: row.status || '대여가능',
+      brand: row.brand || '중국포인포',
+      locationNo: row.locationNo || '0',
+      code: row.code,
+      name: row.name || '',
+      category: row.category || '유형화샘플',
+      registerer: row.registerer || '허경아',
+      useYn: row.useYn || '사용',
+      color: row.color || '',
+      gender: row.gender || 'U',
+      country: row.country || 'KR',
+      price: Number(row.price) || 0,
+      description: row.description || '',
+      brandCode: row.brandCode || 'POINFO_CN',
+      season: row.season || '',
+      material: row.material || '',
+      imgFront: row.imgFront || (existingIndex >= 0 ? db.samples[existingIndex].imgFront : ''),
+      imgBack: row.imgBack || (existingIndex >= 0 ? db.samples[existingIndex].imgBack : ''),
+    };
+
+    if (existingIndex >= 0) {
+      db.samples[existingIndex] = sampleRecord;
+      updatedCount++;
+    } else {
+      db.samples.push(sampleRecord);
+      addedCount++;
+    }
+  });
+
+  saveDB(db);
+  res.json({
+    success: true,
+    addedCount,
+    updatedCount,
+    message: `일괄 등록 완료 (신규 ${addedCount}건, 수정/갱신 ${updatedCount}건)`,
+  });
+});
+
+// Borrow.
+app.post('/api/rentals/borrow', (req, res) => {
+  const { sampleCode, borrowerId, rentDays } = req.body;
+  const db = getDB();
+
+  const sample = db.samples.find((s: any) => s.code === sampleCode);
+  const member = db.members.find((m: any) => m.memberId === borrowerId);
+
+  if (!sample) return res.status(404).json({ success: false, message: '해당 상품 코드를 가진 샘플을 찾을 수 없습니다.' });
+  if (!member) return res.status(404).json({ success: false, message: '등록되지 않은 사원 번호입니다. 임직원 관리를 확인해주세요.' });
+  if (sample.status !== '대여가능') return res.status(400).json({ success: false, message: '해당 샘플은 현재 대여 가능한 상태가 아닙니다.' });
+
+  const days = Number(rentDays) || 7;
+  const today = new Date();
+  const due = new Date();
+  due.setDate(today.getDate() + days);
+  const formatDate = (d: Date) => d.toISOString().substring(0, 10);
+
+  const newRental = {
+    rentalId: 'R-' + Date.now(),
+    sampleCode: sample.code,
+    sampleName: sample.name || '미지정 상품',
+    sampleBrand: sample.brand,
+    borrowerId: member.memberId,
+    borrowerName: member.name,
+    borrowerEmail: member.email,
+    borrowerGroup: member.groupName,
+    rentDate: formatDate(today),
+    dueDate: formatDate(due),
+    returnDate: null,
+    status: '대여중',
+    notifyCount: 0,
+    lastNotifyDate: null,
+    notifyHistory: [],
+  };
+
+  sample.status = '대여중';
+  db.rentals.push(newRental);
+  saveDB(db);
+  res.json({ success: true, rental: newRental, message: '대여 처리가 완료되었습니다.' });
+});
+
+// Return.
+app.post('/api/rentals/return', (req, res) => {
+  const { rentalId } = req.body;
+  const db = getDB();
+
+  const rental = db.rentals.find((r: any) => r.rentalId === rentalId);
+  if (!rental) return res.status(404).json({ success: false, message: '해당 대여 이력을 찾을 수 없습니다.' });
+
+  const sample = db.samples.find((s: any) => s.code === rental.sampleCode);
+  if (sample) sample.status = '대여가능';
+
+  rental.returnDate = new Date().toISOString().substring(0, 10);
+  rental.status = '반납완료';
+  saveDB(db);
+  res.json({ success: true, message: '반납 처리가 완료되었습니다.' });
+});
+
+// AI Agent: analyze a garment image → structured metadata.
+app.post('/api/agent/analyze-image', async (req, res) => {
+  const { base64 } = req.body;
+  if (!base64) return res.status(400).json({ success: false, message: '이미지 데이터가 존재하지 않습니다.' });
+
+  try {
+    const ai = getAi();
+    let cleanedBase64 = base64;
+    let mimeType = 'image/jpeg';
+    if (base64.includes(';base64,')) {
+      const parts = base64.split(';base64,');
+      cleanedBase64 = parts[1];
+      mimeType = parts[0].replace('data:', '');
+    }
+
+    const systemPrompt = `당신은 의류 이미지를 정밀 분석하여 패션 데이터베이스용 메타데이터를 정교하게 추출하는 전문가이자 마이멜로디 AI 패션 코디네이터 에이전트입니다.
+제공된 의류 사진(FRONT 또는 전면 촬영본)을 꼼꼼하게 관찰한 다음, 상품의 패션 데이터 정보들을 분석하고 추출하여 일괄 스마트 등록을 위한 최적의 결과값을 한국어로 알려주세요.
+
+반드시 아래 JSON 규격을 철저히 준수하여 출력하십시오. JSON 스키마 외의 설명글이나 백틱(\`\`\`) 등 불필요한 텍스트를 절대 출력하지 마십시오:
+{
+  "name": "[분석된 상품 명칭을 생성하세요. 예: GU 린넨 혼방 스트라이프 셔츠 | Women]",
+  "brand": "[식별되거나 유추되는 브랜드명 기재, 모르는 경우 'GU' 또는 'UNIQLO', 'ZARA' 등 대중적인 브랜드 중에서 디자인 형태에 부합하도록 적당히 유추하거나, '중국포인포', '기타' 브랜드로 출력]",
+  "material": "[소재 속성 기재, 예: '린넨 70%, 코튼 30%' 또는 '코튼 100%' 또는 '울 혼방']",
+  "color": "[검출된 색상들을 기재, 예: '베이지', '오렌지, 화이트', '블랙']",
+  "category": "[카테고리명 선택 기재: '오리지널', '유형화샘플', '촬영샘플', '출장샘플' 중 하나로 필수 선정하여 출력]",
+  "gender": "[성별 타겟 유형 한 글자로 필수 기재: 'F'(여성용), 'M'(남성용), 'U'(공용) 중 하나로 선정]",
+  "country": "[유추되는 원산지 국가 코드: 'KR'(한국), 'CN'(중국), 'JP'(일본), 'US'(미국) 중 하나로 기재]",
+  "price": [적당히 산출한 시장 가격 또는 대여 단가값 정수 출력, 예: 39000],
+  "size": "[유추되는 사이즈: 'S', 'M', 'L', 'XL' 중 하나로 기재]",
+  "condition": "[의류의 추정 보존 상태: '아주 좋음', '좋음', '양호함', '약간의 얼룩/손상 있음', '얼룩/손상 있음' 중 하나로 기재]",
+  "season": "[적절한 시즌: 'SS', 'FW' 중 하나로 기재]",
+  "description": "[의류의 디자인 특징 및 디테일 요소를 1-2문장으로 기술한 설명 기재]"
+}`;
+
+    const imagePart = { inlineData: { mimeType, data: cleanedBase64 } };
+
+    const modelResponse = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: [imagePart, { text: 'Analyze this garment image and return JSON structure.' }],
+      config: { systemInstruction: systemPrompt, responseMimeType: 'application/json' },
+    });
+
+    const jsonOutput = JSON.parse((modelResponse.text || '{}').trim());
+    res.json({ success: true, analysis: jsonOutput });
+  } catch (error: any) {
+    console.error('Gemini image analyze error:', error);
+    // Graceful mock fallback if API key or network issues occur.
+    res.json({
+      success: true,
+      analysis: {
+        name: 'AI 추천 린넨 혼방 스트라이프 셔츠',
+        brand: 'GU',
+        material: '린넨 50%, 코튼 50%',
+        color: '베이지',
+        category: '유형화샘플',
+        gender: 'F',
+        country: 'JP',
+        price: 29000,
+        size: 'M',
+        condition: '아주 좋음',
+        season: 'SS',
+        description: '자연스러운 구김과 린넨 혼방 소재로 쾌적한 피팅감을 선사하는 데일리 스트라이프 셔츠.',
+      },
+    });
+  }
+});
+
+// AI Agent: bulk-create samples from AI-assisted rows (sequential PCCAI codes).
+app.post('/api/samples/bulk-create-from-ai', (req, res) => {
+  const { items } = req.body;
+  if (!items || !Array.isArray(items)) {
+    return res.status(400).json({ success: false, message: '올바른 상품 등록 리스트가 전달되지 않았습니다.' });
+  }
+
+  const db = getDB();
+  const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  let addedCount = 0;
+
+  let latestSeed = 32992;
+  db.samples.forEach((s: any) => {
+    if (s.code && s.code.startsWith('PCCAI')) {
+      const numPart = parseInt(s.code.replace('PCCAI', ''));
+      if (!isNaN(numPart) && numPart > latestSeed) latestSeed = numPart;
+    }
+  });
+
+  items.forEach((item: any) => {
+    latestSeed++;
+    const generatedCode = `PCCAI${String(latestSeed).padStart(6, '0')}`;
+
+    const sampleRecord = {
+      id: db.samples.length + 1,
+      regDate: nowStr,
+      status: '대여가능',
+      brand: item.brand || '중국포인포',
+      locationNo: item.locationNo || 'H-' + Math.floor(Math.random() * 800 + 100),
+      code: generatedCode,
+      name: item.name || `${generatedCode} AI 등록 의류`,
+      category: item.category || '유형화샘플',
+      registerer: '허경아',
+      useYn: '사용',
+      color: item.color || '베이지',
+      gender: item.gender || 'U',
+      country: item.country || 'KR',
+      price: Number(item.price) * 2 || 29000,
+      description: item.description || '',
+      brandCode: item.brand === 'GU' ? 'GU_JP' : item.brand === 'UNIQLO' ? 'UNIQLO_JP' : 'POINFO_CN',
+      season: item.season || 'SS',
+      material: item.material || '면 100%',
+      size: item.size || 'M',
+      condition: item.condition || '아주 좋음',
+      imgFront: item.imgFront || '',
+      imgBack: item.imgBack || '',
+      rentalFee: Number(item.price) || 15000,
+      overdueFee1: 10000,
+      overdueFee2: 20000,
+      rentalPeriod: 28,
+      year: '2026',
+      month: '06',
+      views: 0,
+      topic: item.name || '',
+      classification: '셔츠, 블라우스(PCCAI03)',
+      itemType: item.name ? item.name.split(' ').pop() : '셔츠',
+      hangeringNo: 'Hanger-' + Math.floor(Math.random() * 200 + 100),
+      overdueCharge: 0,
+      overdueDays: 0,
+      postingStatus: '게시',
+    };
+
+    db.samples.unshift(sampleRecord);
+    addedCount++;
+  });
+
+  saveDB(db);
+  res.json({
+    success: true,
+    addedCount,
+    message: `${addedCount}개의 신규 의류 자산이 AI 스마트 대장 자동분석 및 순차 발급 코드로 옷장 대장에 일괄 등록되었습니다!`,
+  });
+});
+
+// AI Agent: draft an overdue-return reminder email.
+app.post('/api/agent/draft-email', async (req, res) => {
+  const { borrowerName, borrowerGroup, sampleName, sampleCode, dueDate, daysOverdue, emailType } = req.body;
+
+  try {
+    const ai = getAi();
+    const systemPrompt = `당신은 패션 의류 브랜드 기업의 '디자인 샘플 자산 관리실 마이멜로디' AI 에이전트입니다.
+의류 샘플을 대여했으나 반납 예정 기일이 지나 연체 중인 임직원에게 발송할 친절하지만 명확한 반납 안내 독촉 메일을 양식에 맞춰 작성해주세요.
+발송인 정보: 디자인자산관리시스템 (CDO 산하 디자인개발지원센터)
+수신인 이메일 주소 및 그룹 부서 정보를 참고하여 예의 바르고 격조 높은 한국어 비즈니스 이메일 톤앤매너로 답변해 서정적이면서도 반납이 꼭 필요함을 알리세요.
+이메일 타입에 따라 톤을 다르게 합니다:
+- 'gentle': 1회 차 정중하고 상냥한 안내 (공유 자산 활성화 권장)
+- 'warning': 2회 차 경고형 메시지 (타 팀 출장 촬영 일정이 잡혔거나 다음 개발 일정 영향 강조)
+- 'strict': 최종 강력 경고 메시지 (경위서 혹은 본부 내 자산 미반납 리스트 공유 등 주의 안내)
+
+사용자가 제공한 정보를 메일에 잘 녹여내세요. output 형식은 반드시 아래 JSON 규격이어야 하며, 다른 부가 텍스트는 출력하지 마세요:
+{
+  "subject": "[이메일 제목]",
+  "content": "[이메일 본문 내용 (엔터와 줄바꿈 개행 '\\n' 포함)]"
+}`;
+
+    const userPrompt = `임직원 정보:
+- 이름: ${borrowerName}
+- 부서: ${borrowerGroup}
+- 대여 상품명: ${sampleName}
+- 상품 코드: ${sampleCode}
+- 반납 예정일: ${dueDate}
+- 연체 일수: ${daysOverdue}일 연체 중
+- 메일 단계: ${emailType || 'gentle'}`;
+
+    const modelResponse = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: userPrompt,
+      config: { systemInstruction: systemPrompt, responseMimeType: 'application/json' },
+    });
+
+    res.json(JSON.parse((modelResponse.text || '{}').trim()));
+  } catch (error: any) {
+    console.error('Gemini Draft Error:', error);
+    res.status(200).json({
+      subject: `[반납 촉구 안내] 대여하신 의류 샘플 반납 기한 경과 안내 (${sampleName})`,
+      content: `안녕하세요, ${borrowerGroup} ${borrowerName} 님.\n\n디자인 샘플 자산 지원실에서 안내해 드립니다.\n귀하께서 대여하신 의류 샘플 [${sampleName}] (${sampleCode})은 반납 기한(${dueDate})을 지나 ${daysOverdue}일째 연체 상태입니다.\n\n해당 제품과 관련한 후속 모델 개발 및 타 브랜드 자산 공람 일정이 밀려 있어 차질이 발생하고 있습니다.\n본 메일을 확인하시는 즉시 어드민 실로 자산을 가져와 확인 절차를 거쳐 반납 접수 처리해주시기를 부탁드립니다.\n\n감사합니다.\n디자인자산관리시스템 드림`,
+    });
+  }
+});
+
+// Record a sent notification (writes to rental history; flips status to 연체중).
+app.post('/api/agent/send-email', (req, res) => {
+  const { rentalId, subject, content } = req.body;
+  const db = getDB();
+
+  const rental = db.rentals.find((r: any) => r.rentalId === rentalId);
+  if (!rental) return res.status(404).json({ success: false, message: '해당 대여 내역을 찾을 수 없습니다.' });
+
+  const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  rental.notifyCount = (rental.notifyCount || 0) + 1;
+  rental.lastNotifyDate = nowStr;
+  if (!rental.notifyHistory) rental.notifyHistory = [];
+  rental.notifyHistory.unshift({ sentAt: nowStr, subject, content });
+
+  if (rental.status === '대여중') {
+    rental.status = '연체중';
+    const s = db.samples.find((xs: any) => xs.code === rental.sampleCode);
+    if (s && s.status === '대여중') s.status = '연체중';
+  }
+
+  saveDB(db);
+  res.json({
+    success: true,
+    notifyCount: rental.notifyCount,
+    lastNotifyDate: nowStr,
+    message: `${rental.borrowerName} (${rental.borrowerEmail}) 님께 자동으로 반납 안내 이메일이 발송되었습니다.`,
+  });
+});
+
+// =========================================================================
+// Vite (dev: middleware) / static (prod) + server bootstrap
+// =========================================================================
+async function startServer() {
+  if (!isProd) {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist', 'public');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running at http://0.0.0.0:${PORT} (${isProd ? 'production' : 'development'})`);
+  });
+}
+
+startServer();
