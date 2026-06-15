@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { put, list } from '@vercel/blob';
 
 dotenv.config();
 
@@ -12,17 +13,35 @@ const isProd = process.env.NODE_ENV === 'production';
 
 app.use(express.json({ limit: '50mb' }));
 
-// --- Database (file-based JSON store) ------------------------------------
-// DATA_DIR lets you point the DB at a persistent volume in production
-// (e.g. /data on a Hugging Face Space or a mounted disk on Render).
+// --- Database ------------------------------------------------------------
+// 운영(Vercel): Vercel Blob 스토어에 JSON 한 덩어리를 통째로 저장한다.
+//   - BLOB_READ_WRITE_TOKEN 이 있으면 Blob 모드로 동작.
+//   - Vercel 서버리스는 파일시스템이 읽기 전용/휘발성이라 파일 DB가 영구 저장되지 않음.
+// 로컬 개발: 토큰이 없으면 기존처럼 파일시스템의 database.json 을 사용한다.
 const DATA_DIR = process.env.DATA_DIR || process.cwd();
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 const SEED_FILE = path.join(process.cwd(), 'database.json');
 
+const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
+const USE_BLOB = !!BLOB_TOKEN;
+const BLOB_KEY = 'database.json';
+
 const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], categories: [] };
 
-// On first run with a fresh DATA_DIR, seed from the bundled database.json.
-function ensureDB() {
+// 번들/로컬에 포함된 database.json 을 초기 시드 데이터로 읽는다.
+function readSeed(): any {
+  try {
+    if (fs.existsSync(SEED_FILE)) {
+      return JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'));
+    }
+  } catch (err) {
+    console.error('Error reading seed file:', err);
+  }
+  return { ...EMPTY_DB };
+}
+
+// --- 로컬 파일 스토어 -----------------------------------------------------
+function ensureLocalDB() {
   if (!fs.existsSync(DB_FILE)) {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -37,24 +56,65 @@ function ensureDB() {
   }
 }
 
-function getDB() {
-  try {
-    ensureDB();
-    if (fs.existsSync(DB_FILE)) {
-      return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-    }
-  } catch (err) {
-    console.error('Error reading database file:', err);
+function getLocalDB(): any {
+  ensureLocalDB();
+  if (fs.existsSync(DB_FILE)) {
+    return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
   }
   return { ...EMPTY_DB };
 }
 
-function saveDB(data: any) {
+function saveLocalDB(data: any): boolean {
+  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
+  return true;
+}
+
+// --- Vercel Blob 스토어 ---------------------------------------------------
+async function getBlobDB(): Promise<any> {
+  const { blobs } = await list({ prefix: BLOB_KEY, token: BLOB_TOKEN });
+  const found = blobs.find((b) => b.pathname === BLOB_KEY) || blobs[0];
+  // Blob 이 비어있으면(최초 배포) 번들된 database.json 으로 시드한다.
+  if (!found) {
+    const seed = readSeed();
+    await saveBlobDB(seed);
+    return seed;
+  }
+  // CDN 캐시 우회: 저장 직후에도 항상 최신 내용을 읽도록 타임스탬프 쿼리를 붙인다.
+  const bust = `${found.url}${found.url.includes('?') ? '&' : '?'}ts=${Date.now()}`;
+  const res = await fetch(bust, { cache: 'no-store' });
+  if (!res.ok) throw new Error('Blob fetch failed: ' + res.status);
+  return await res.json();
+}
+
+async function saveBlobDB(data: any): Promise<boolean> {
+  await put(BLOB_KEY, JSON.stringify(data), {
+    access: 'public',
+    token: BLOB_TOKEN,
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    contentType: 'application/json',
+    cacheControlMaxAge: 0,
+  });
+  return true;
+}
+
+// --- 통합 비동기 API ------------------------------------------------------
+async function getDB(): Promise<any> {
   try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
-    return true;
+    if (USE_BLOB) return await getBlobDB();
+    return getLocalDB();
   } catch (err) {
-    console.error('Error writing database file:', err);
+    console.error('Error reading database:', err);
+    return { ...EMPTY_DB };
+  }
+}
+
+async function saveDB(data: any): Promise<boolean> {
+  try {
+    if (USE_BLOB) return await saveBlobDB(data);
+    return saveLocalDB(data);
+  } catch (err) {
+    console.error('Error writing database:', err);
     return false;
   }
 }
@@ -83,12 +143,12 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-app.get('/api/db', (_req, res) => {
-  res.json(getDB());
+app.get('/api/db', async (_req, res) => {
+  res.json(await getDB());
 });
 
-app.post('/api/db/save', (req, res) => {
-  if (saveDB(req.body)) {
+app.post('/api/db/save', async (req, res) => {
+  if (await saveDB(req.body)) {
     res.json({ success: true, message: '데이터가 성공적으로 저장되었습니다.' });
   } else {
     res.status(500).json({ success: false, message: '데이터베이스 저장 실패' });
@@ -96,13 +156,13 @@ app.post('/api/db/save', (req, res) => {
 });
 
 // Bulk image upload — auto-matches front/back by filename against sample codes.
-app.post('/api/samples/bulk-images', (req, res) => {
+app.post('/api/samples/bulk-images', async (req, res) => {
   const { files } = req.body; // [{ filename, base64 }]
   if (!files || !Array.isArray(files)) {
     return res.status(400).json({ success: false, message: '올바르지 않은 요청 파일 형식입니다.' });
   }
 
-  const db = getDB();
+  const db = await getDB();
   let matchCount = 0;
 
   files.forEach((file: { filename: string; base64: string }) => {
@@ -123,7 +183,7 @@ app.post('/api/samples/bulk-images', (req, res) => {
     }
   });
 
-  saveDB(db);
+  await saveDB(db);
   res.json({
     success: true,
     matchCount,
@@ -132,13 +192,13 @@ app.post('/api/samples/bulk-images', (req, res) => {
 });
 
 // Bulk import rows (Excel/CSV → JSON).
-app.post('/api/samples/bulk-excel', (req, res) => {
+app.post('/api/samples/bulk-excel', async (req, res) => {
   const { rows } = req.body;
   if (!rows || !Array.isArray(rows)) {
     return res.status(400).json({ success: false, message: '불러올 상품 행 데이터가 존재하지 않습니다.' });
   }
 
-  const db = getDB();
+  const db = await getDB();
   let addedCount = 0;
   let updatedCount = 0;
   const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
@@ -179,7 +239,7 @@ app.post('/api/samples/bulk-excel', (req, res) => {
     }
   });
 
-  saveDB(db);
+  await saveDB(db);
   res.json({
     success: true,
     addedCount,
@@ -274,9 +334,9 @@ app.post('/api/sheets/import', async (req, res) => {
 });
 
 // Borrow.
-app.post('/api/rentals/borrow', (req, res) => {
+app.post('/api/rentals/borrow', async (req, res) => {
   const { sampleCode, borrowerId, rentDays } = req.body;
-  const db = getDB();
+  const db = await getDB();
 
   const sample = db.samples.find((s: any) => s.code === sampleCode);
   const member = db.members.find((m: any) => m.memberId === borrowerId);
@@ -311,14 +371,14 @@ app.post('/api/rentals/borrow', (req, res) => {
 
   sample.status = '대여중';
   db.rentals.push(newRental);
-  saveDB(db);
+  await saveDB(db);
   res.json({ success: true, rental: newRental, message: '대여 처리가 완료되었습니다.' });
 });
 
 // Return.
-app.post('/api/rentals/return', (req, res) => {
+app.post('/api/rentals/return', async (req, res) => {
   const { rentalId } = req.body;
-  const db = getDB();
+  const db = await getDB();
 
   const rental = db.rentals.find((r: any) => r.rentalId === rentalId);
   if (!rental) return res.status(404).json({ success: false, message: '해당 대여 이력을 찾을 수 없습니다.' });
@@ -328,7 +388,7 @@ app.post('/api/rentals/return', (req, res) => {
 
   rental.returnDate = new Date().toISOString().substring(0, 10);
   rental.status = '반납완료';
-  saveDB(db);
+  await saveDB(db);
   res.json({ success: true, message: '반납 처리가 완료되었습니다.' });
 });
 
@@ -416,13 +476,13 @@ app.post('/api/agent/analyze-image', async (req, res) => {
 });
 
 // AI Agent: bulk-create samples from AI-assisted rows (sequential PCCAI codes).
-app.post('/api/samples/bulk-create-from-ai', (req, res) => {
+app.post('/api/samples/bulk-create-from-ai', async (req, res) => {
   const { items } = req.body;
   if (!items || !Array.isArray(items)) {
     return res.status(400).json({ success: false, message: '올바른 상품 등록 리스트가 전달되지 않았습니다.' });
   }
 
-  const db = getDB();
+  const db = await getDB();
   const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
   let addedCount = 0;
 
@@ -490,7 +550,7 @@ app.post('/api/samples/bulk-create-from-ai', (req, res) => {
     addedCount++;
   });
 
-  saveDB(db);
+  await saveDB(db);
   res.json({
     success: true,
     addedCount,
@@ -545,9 +605,9 @@ app.post('/api/agent/draft-email', async (req, res) => {
 });
 
 // Record a sent notification (writes to rental history; flips status to 연체중).
-app.post('/api/agent/send-email', (req, res) => {
+app.post('/api/agent/send-email', async (req, res) => {
   const { rentalId, subject, content } = req.body;
-  const db = getDB();
+  const db = await getDB();
 
   const rental = db.rentals.find((r: any) => r.rentalId === rentalId);
   if (!rental) return res.status(404).json({ success: false, message: '해당 대여 내역을 찾을 수 없습니다.' });
@@ -564,7 +624,7 @@ app.post('/api/agent/send-email', (req, res) => {
     if (s && s.status === '대여중') s.status = '연체중';
   }
 
-  saveDB(db);
+  await saveDB(db);
   res.json({
     success: true,
     notifyCount: rental.notifyCount,
