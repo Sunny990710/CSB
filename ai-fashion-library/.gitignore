@@ -12,3 +12,6 @@ coverage/
 
 # Runtime data dir (if you point DATA_DIR at a local folder)
 /data/
+
+# Vercel 빌드 시 자동 생성되는 번들 (커밋 안 함)
+api/_server.js
