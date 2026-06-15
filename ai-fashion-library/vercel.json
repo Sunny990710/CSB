@@ -3,6 +3,7 @@
   "buildCommand": "vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=api/_server.js",
   "outputDirectory": "dist/public",
   "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
