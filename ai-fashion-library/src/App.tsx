@@ -4,12 +4,15 @@ import {
   Columns3, Package, Users, BarChart3, Receipt, Settings, Bell, 
   HelpCircle, LogOut, CheckCircle, RefreshCw, AlertTriangle, ChevronDown, ChevronLeft,
   LayoutGrid, Folder, Activity, Trash2, ShieldCheck, Sparkles, Database,
-  Upload, ShoppingCart, RotateCcw, ArrowUpRight, History, Tags, User, Clock
+  Upload, ShoppingCart, RotateCcw, ArrowUpRight, History, Tags, Tag, User, Clock, UserCheck
 } from 'lucide-react';
-import { Sample, Rental, Member, Group, Category } from './types';
+import { Sample, Rental, Member, Group, Category, Brand } from './types';
 import DashboardView from './components/DashboardView';
 import SampleManagerView from './components/SampleManagerView';
 import MemberManagerView from './components/MemberManagerView';
+import PendingMemberView from './components/PendingMemberView';
+import RolePermissionView from './components/RolePermissionView';
+import BrandManagerView from './components/BrandManagerView';
 import RentalManagerView from './components/RentalManagerView';
 import CategoryManagerView from './components/CategoryManagerView';
 import LoginView from './components/LoginView';
@@ -18,9 +21,9 @@ import logoUrl from './assets/logo.png';
 const AUTH_STORAGE_KEY = 'csb_auth_member_id';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rental_scan' | 'rental_status' | 'categories' | 'members'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rental_scan' | 'rental_status' | 'categories' | 'settings_pending' | 'settings_users' | 'settings_roles' | 'settings_brands'>('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [rentalMenuOpen, setRentalMenuOpen] = useState(false);
+  const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({});
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [notifMenuOpen, setNotifMenuOpen] = useState(false);
   
@@ -30,6 +33,7 @@ export default function App() {
   const [members, setMembers] = useState<Member[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [brands, setBrands] = useState<Brand[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorWord, setErrorWord] = useState('');
   const [currentUser, setCurrentUser] = useState<Member | null>(null);
@@ -48,6 +52,7 @@ export default function App() {
         setMembers(data.members || []);
         setGroups(data.groups || []);
         setCategories(data.categories || []);
+        setBrands(data.brands || []);
         setErrorWord('');
         setLoading(false);
       })
@@ -71,6 +76,7 @@ export default function App() {
         setMembers(data.members || []);
         setGroups(data.groups || []);
         setCategories(data.categories || []);
+        setBrands(data.brands || []);
       })
       .catch((err) => console.error('Silent refresh error:', err));
   };
@@ -99,19 +105,21 @@ export default function App() {
   };
 
   // Generic Save / Update back to the server.ts JSON db
-  const handleSaveDB = (newSamples: Sample[], newMembers?: Member[], newGroups?: Group[], newRentals?: Rental[], newCategories?: Category[]) => {
+  const handleSaveDB = (newSamples: Sample[], newMembers?: Member[], newGroups?: Group[], newRentals?: Rental[], newCategories?: Category[], newBrands?: Brand[]) => {
     // Optimistic UI update
     const updatedSamples = newSamples;
     const updatedMembers = newMembers || members;
     const updatedGroups = newGroups || groups;
     const updatedRentals = newRentals || rentals;
     const updatedCategories = newCategories || categories;
+    const updatedBrands = newBrands || brands;
 
     setSamples(updatedSamples);
     setMembers(updatedMembers);
     setGroups(updatedGroups);
     setRentals(updatedRentals);
     setCategories(updatedCategories);
+    setBrands(updatedBrands);
 
     fetch('/api/db/save', {
       method: 'POST',
@@ -121,7 +129,8 @@ export default function App() {
         members: updatedMembers,
         groups: updatedGroups,
         rentals: updatedRentals,
-        categories: updatedCategories
+        categories: updatedCategories,
+        brands: updatedBrands
       })
     })
       .then((res) => res.json())
@@ -198,32 +207,44 @@ export default function App() {
                 { id: 'dashboard', label: '홈', icon: LayoutGrid },
                 { id: 'upload', label: '업로드', icon: Upload },
                 { id: 'samples', label: '상품관리', icon: Package },
+                { id: 'categories', label: '카테고리 관리', icon: Tags },
                 {
                   id: 'rentals',
                   label: '대여관리',
                   icon: Activity,
+                  defaultChild: 'rental_scan',
                   children: [
                     { id: 'rental_scan', label: '대여/반납하기', icon: ArrowUpRight },
                     { id: 'rental_status', label: '대여/반납 현황', icon: History },
                   ],
                 },
-                { id: 'categories', label: '카테고리 관리', icon: Tags },
-                { id: 'members', label: '설정', icon: Settings },
+                {
+                  id: 'settings',
+                  label: '설정',
+                  icon: Settings,
+                  defaultChild: 'settings_pending',
+                  children: [
+                    { id: 'settings_pending', label: '가입 승인', icon: UserCheck },
+                    { id: 'settings_users', label: '사용자 관리', icon: Users },
+                    { id: 'settings_roles', label: '관리자/권한 관리', icon: ShieldCheck },
+                    { id: 'settings_brands', label: '브랜드 관리', icon: Tag },
+                  ],
+                },
               ].map((item) => {
                 const Icon = item.icon;
 
                 // --- Expandable group (대여관리) ---
                 if ('children' in item && item.children) {
                   const groupActive = item.children.some((c) => c.id === activeTab);
-                  const showChildren = !isSidebarCollapsed && (rentalMenuOpen || groupActive);
+                  const showChildren = !isSidebarCollapsed && ((openMenus[item.id] ?? false) || groupActive);
                   return (
                     <div key={item.id}>
                       <button
                         onClick={() => {
                           if (isSidebarCollapsed) {
-                            setActiveTab('rental_scan');
+                            setActiveTab((item.defaultChild || item.children[0].id) as any);
                           } else {
-                            setRentalMenuOpen((o) => !o);
+                            setOpenMenus((prev) => ({ ...prev, [item.id]: !(prev[item.id] ?? false) }));
                           }
                         }}
                         className={`w-full text-left py-2.5 rounded-lg text-xs font-bold transition-colors flex items-center border-l-[3px] border-transparent group cursor-pointer text-slate-400 hover:text-white hover:bg-white/5 ${
@@ -375,12 +396,17 @@ export default function App() {
             <option value="dashboard">🏠 홈 (대시보드)</option>
             <option value="upload">⬆️ 업로드 (일괄 의류 매칭)</option>
             <option value="samples">📂 상품관리 (샘플 대장)</option>
+            <option value="categories">🗂️ 카테고리 관리</option>
             <optgroup label="📋 대여관리">
               <option value="rental_scan">🔄 대여/반납하기</option>
               <option value="rental_status">🕘 대여/반납 현황</option>
             </optgroup>
-            <option value="categories">🏷️ 카테고리 관리</option>
-            <option value="members">⚙️ 설정 (권한 관리)</option>
+            <optgroup label="⚙️ 설정">
+              <option value="settings_pending">🕓 가입 승인</option>
+              <option value="settings_users">👤 사용자 관리</option>
+              <option value="settings_roles">🛡️ 관리자/권한 관리</option>
+              <option value="settings_brands">🏷️ 브랜드 관리</option>
+            </optgroup>
           </select>
         </div>
 
@@ -532,18 +558,6 @@ export default function App() {
                   </div>
                 )}
 
-                {activeTab === 'categories' && (
-                  <div id="categories-subview-frame">
-                    <CategoryManagerView
-                      categories={categories}
-                      samples={samples}
-                      onSave={(newCategories, newSamples) =>
-                        handleSaveDB(newSamples || samples, members, groups, rentals, newCategories)
-                      }
-                    />
-                  </div>
-                )}
-
                 {activeTab === 'upload' && (
                   <div id="upload-subview-frame">
                     <SampleManagerView
@@ -570,6 +584,30 @@ export default function App() {
 
                 {(activeTab === 'rental_scan' || activeTab === 'rental_status') && (
                   <div id="rentals-subview-frame">
+                    <div className="flex border-b border-slate-200 mb-6 overflow-x-auto" id="rental-subtabs">
+                      {[
+                        { id: 'rental_scan', label: '대여/반납하기', icon: ArrowUpRight },
+                        { id: 'rental_status', label: '대여/반납 현황', icon: History },
+                      ].map((tab) => {
+                        const TabIcon = tab.icon;
+                        const isActive = activeTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            onClick={() => setActiveTab(tab.id as any)}
+                            className={`py-3.5 px-6 font-semibold text-xs flex items-center gap-2 border-b-2 font-sans whitespace-nowrap transition-all cursor-pointer ${
+                              isActive
+                                ? 'border-indigo-600 text-indigo-600'
+                                : 'border-transparent text-slate-500 hover:text-slate-800'
+                            }`}
+                            id={`rental-tab-btn-${tab.id}`}
+                          >
+                            <TabIcon className="w-4 h-4" />
+                            <span>{tab.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
                     <RentalManagerView
                       rentals={rentals}
                       samples={samples}
@@ -581,12 +619,85 @@ export default function App() {
                   </div>
                 )}
 
-                {activeTab === 'members' && (
-                  <div id="members-subview-frame">
+                {['settings_pending', 'settings_users', 'settings_roles', 'settings_brands'].includes(activeTab) && (
+                  <div className="flex border-b border-slate-200 mb-6 overflow-x-auto" id="settings-subtabs">
+                    {[
+                      { id: 'settings_pending', label: '가입 승인', icon: UserCheck },
+                      { id: 'settings_users', label: '사용자 관리', icon: Users },
+                      { id: 'settings_roles', label: '관리자/권한 관리', icon: ShieldCheck },
+                      { id: 'settings_brands', label: '브랜드 관리', icon: Tag },
+                    ].map((tab) => {
+                      const TabIcon = tab.icon;
+                      const isActive = activeTab === tab.id;
+                      const pendingCount = tab.id === 'settings_pending' ? members.filter((m) => m.status === 'pending').length : 0;
+                      return (
+                        <button
+                          key={tab.id}
+                          onClick={() => setActiveTab(tab.id as any)}
+                          className={`py-3.5 px-6 font-semibold text-xs flex items-center gap-2 border-b-2 font-sans whitespace-nowrap transition-all cursor-pointer ${
+                            isActive
+                              ? 'border-indigo-600 text-indigo-600'
+                              : 'border-transparent text-slate-500 hover:text-slate-800'
+                          }`}
+                          id={`settings-tab-btn-${tab.id}`}
+                        >
+                          <TabIcon className="w-4 h-4" />
+                          <span>{tab.label}</span>
+                          {pendingCount > 0 && (
+                            <span className="bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">
+                              {pendingCount}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {activeTab === 'settings_pending' && (
+                  <div id="settings-pending-subview-frame">
+                    <PendingMemberView
+                      members={members}
+                      onSave={(newMembers) => handleSaveDB(samples, newMembers)}
+                    />
+                  </div>
+                )}
+
+                {activeTab === 'settings_users' && (
+                  <div id="settings-users-subview-frame">
                     <MemberManagerView
                       members={members}
-                      groups={groups}
-                      onSaveDB={(newMembers, newGroups) => handleSaveDB(samples, newMembers, newGroups)}
+                      onSave={(newMembers) => handleSaveDB(samples, newMembers)}
+                    />
+                  </div>
+                )}
+
+                {activeTab === 'settings_roles' && (
+                  <div id="settings-roles-subview-frame">
+                    <RolePermissionView
+                      members={members}
+                      onSave={(newMembers) => handleSaveDB(samples, newMembers)}
+                    />
+                  </div>
+                )}
+
+                {activeTab === 'settings_brands' && (
+                  <div id="settings-brands-subview-frame">
+                    <BrandManagerView
+                      brands={brands}
+                      onSave={(newBrands) => handleSaveDB(samples, members, groups, rentals, categories, newBrands)}
+                    />
+                  </div>
+                )}
+
+                {activeTab === 'categories' && (
+                  <div id="categories-subview-frame">
+                    <CategoryManagerView
+                      categories={categories}
+                      samples={samples}
+                      onSave={(newCategories, newSamples) =>
+                        handleSaveDB(newSamples || samples, members, groups, rentals, newCategories)
+                      }
                     />
                   </div>
                 )}

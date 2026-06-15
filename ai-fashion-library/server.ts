@@ -33,7 +33,7 @@ const BLOB_KEY = 'database.json';
 // 정적 토큰이 있을 때만 token 을 넘기고, 없으면 SDK 가 OIDC 로 인증하도록 비워 둔다.
 const blobAuth = BLOB_TOKEN ? { token: BLOB_TOKEN } : {};
 
-const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], categories: [] };
+const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], categories: [], brands: [] };
 
 // 번들/로컬에 포함된 database.json 을 초기 시드 데이터로 읽는다.
 function readSeed(): any {
@@ -148,38 +148,6 @@ function getAi(): GoogleGenAI {
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
-});
-
-// 임시 진단용: 어떤 저장 모드/환경으로 떠 있는지 확인 (확인 후 제거 예정)
-app.get('/api/_debug', async (req, res) => {
-  const info: any = {
-    useBlob: USE_BLOB,
-    hasBlobToken: !!process.env.BLOB_READ_WRITE_TOKEN,
-    hasBlobStoreId: !!process.env.BLOB_STORE_ID,
-    hasOidcToken: !!process.env.VERCEL_OIDC_TOKEN,
-    commit: process.env.VERCEL_GIT_COMMIT_SHA || null,
-    cwd: process.cwd(),
-    seedExists: fs.existsSync(SEED_FILE),
-  };
-  if (req.query.test === 'write') {
-    try {
-      await saveBlobDB({ ...EMPTY_DB, _probe: Date.now() });
-      info.writeOk = true;
-    } catch (e: any) {
-      info.writeOk = false;
-      info.writeErr = String(e?.message || e);
-      info.writeStack = String(e?.stack || '').split('\n').slice(0, 4);
-    }
-  }
-  if (req.query.test === 'read') {
-    try {
-      const { blobs } = await list({ prefix: BLOB_KEY, ...blobAuth });
-      info.blobList = blobs.map((b) => ({ pathname: b.pathname, size: b.size, url: b.url }));
-    } catch (e: any) {
-      info.readErr = String(e?.message || e);
-    }
-  }
-  res.json(info);
 });
 
 app.get('/api/db', async (_req, res) => {

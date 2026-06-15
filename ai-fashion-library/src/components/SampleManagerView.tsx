@@ -156,6 +156,13 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
   const categoryNames = sortByCategoryOrder(
     activeCategoryNames.length > 0 ? activeCategoryNames : fallbackCategoryNames
   );
+  // 필터용: 최상위(부모 없음) 카테고리만 노출 (하위 카테고리는 제외)
+  const topLevelActiveNames = categories
+    .filter((c) => c.useYn === '사용' && !c.parentId)
+    .map((c) => c.name);
+  const topLevelCategoryNames = sortByCategoryOrder(
+    topLevelActiveNames.length > 0 ? topLevelActiveNames : fallbackCategoryNames
+  );
   const categoryOptionsWith = (current?: string) => {
     const list = [...categoryNames];
     if (current && !list.includes(current)) list.unshift(current);
@@ -495,7 +502,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
   const uniqueCategories =
     selectedCountry === '한국' || selectedCountry === '중국'
       ? ['전체', ...categoriesByCountry[selectedCountry]]
-      : ['전체', ...categoryNames];
+      : ['전체', ...topLevelCategoryNames];
 
   // Excel file / text parser helper (tsv parser)
   const handleParseExcelText = () => {

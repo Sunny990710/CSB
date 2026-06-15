@@ -53,12 +53,18 @@ export interface Sample {
 
 export interface Member {
   memberId: string;
+  loginId?: string;      // 아이디 (로그인 아이디, 보통 이메일 앞부분)
   name: string;
   email: string;
   phone: string;
   groupName: string;
-  affiliation?: string; // 소속 (예: 패션BG 본부)
-  brand?: string;       // 브랜드 (예: 패션연구소)
+  affiliation?: string;  // 소속 (예: 패션BG 본부)
+  brand?: string;        // 브랜드 (예: 패션연구소)
+  appliedDate?: string;  // 신청일 (외부 경로로 가입 신청한 일시)
+  approvalDate?: string; // 승인일
+  status?: 'pending' | 'approved'; // 가입 승인 상태 (없으면 approved로 간주)
+  role?: string;         // 권한 (예: 시스템관리자, 사이트관리자, 중국사이트관리자)
+  category?: string;     // 카테고리 (한국 / 중국)
   useYn: '사용' | '미사용';
 }
 
@@ -75,6 +81,16 @@ export interface Category {
   name: string;
   useYn: '사용' | '미사용';
   parentId?: string | null; // null/undefined = 최상위 카테고리
+}
+
+export interface Brand {
+  id: string;
+  name: string;          // 브랜드명
+  nameEn?: string;       // 브랜드 영문명
+  code?: string;         // 브랜드 코드
+  category?: string;     // 카테고리 (한국 / 중국)
+  description?: string;  // 설명
+  useYn: 'Y' | 'N';
 }
 
 export interface Rental {

@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   Search, Plus, Trash2, Check, Tags, Package, RotateCcw, Save, AlertCircle,
-  ChevronRight, ChevronDown, FolderTree, List, CornerDownRight, X,
+  ChevronRight, ChevronDown, FolderTree, List, CornerDownRight, X, GripVertical, CornerLeftUp,
 } from 'lucide-react';
 import { Category, Sample } from '../types';
 
@@ -34,6 +34,11 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
   const [form, setForm] = useState<FormState>(blankForm());
   const [error, setError] = useState('');
   const [flashId, setFlashId] = useState<string | null>(null);
+
+  // Drag & drop (트리 내 카테고리 이동)
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dragOverRoot, setDragOverRoot] = useState(false);
 
   const isEditing = form.id !== null;
 
@@ -227,6 +232,35 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
     startNewRoot();
   };
 
+  // 드롭 대상이 유효한지(자기 자신/하위로는 이동 불가)
+  const canDropOn = (dragId: string | null, targetId: string): boolean => {
+    if (!dragId || dragId === targetId) return false;
+    const blocked = new Set([dragId, ...descendantIds(dragId)]);
+    return !blocked.has(targetId);
+  };
+
+  // 카테고리를 새 상위(targetParentId, ''=최상위)로 이동
+  const moveCategory = (dragId: string, targetParentId: string) => {
+    const dragged = byId.get(dragId);
+    if (!dragged) return;
+    if (targetParentId && !canDropOn(dragId, targetParentId)) return;
+    if (norm(dragged.parentId) === targetParentId) return; // 변동 없음
+    const updated = categories.map((c) =>
+      c.id === dragId ? { ...c, parentId: targetParentId || null } : c
+    );
+    onSave(updated);
+    if (targetParentId) expandAncestors(targetParentId);
+    setSelectedId(dragId);
+    setForm((p) => (p.id === dragId ? { ...p, parentId: targetParentId } : p));
+    setFlashId(dragId);
+  };
+
+  const clearDrag = () => {
+    setDraggingId(null);
+    setDragOverId(null);
+    setDragOverRoot(false);
+  };
+
   // Parent options for the form (exclude self + descendants)
   const parentOptions = useMemo(() => {
     const blocked = new Set<string>();
@@ -251,18 +285,48 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
       const active = selectedId === cat.id;
       const count = rollupCount.get(cat.id) ?? 0;
       const disabled = cat.useYn === '미사용';
+      const isDragTarget = dragOverId === cat.id && canDropOn(draggingId, cat.id);
+      const isDragging = draggingId === cat.id;
       return (
         <div key={cat.id}>
           <div
             id={`cat-node-${cat.id}`}
+            draggable
+            onDragStart={(e) => {
+              e.stopPropagation();
+              setDraggingId(cat.id);
+              e.dataTransfer.effectAllowed = 'move';
+              try { e.dataTransfer.setData('text/plain', cat.id); } catch { /* noop */ }
+            }}
+            onDragEnd={clearDrag}
+            onDragOver={(e) => {
+              if (!canDropOn(draggingId, cat.id)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
+              if (dragOverId !== cat.id) setDragOverId(cat.id);
+            }}
+            onDragLeave={() => setDragOverId((prev) => (prev === cat.id ? null : prev))}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (draggingId) moveCategory(draggingId, cat.id);
+              clearDrag();
+            }}
             className={`group flex items-center gap-1 rounded-lg pr-2 transition-colors cursor-pointer ${
-              flashId === cat.id
-                ? 'bg-emerald-100 ring-2 ring-emerald-400'
-                : active ? 'bg-indigo-50' : 'hover:bg-slate-50'
+              isDragging ? 'opacity-40' : ''
+            } ${
+              isDragTarget
+                ? 'bg-indigo-50 ring-2 ring-indigo-400'
+                : flashId === cat.id
+                  ? 'bg-emerald-100 ring-2 ring-emerald-400'
+                  : active ? 'bg-indigo-50' : 'hover:bg-slate-50'
             }`}
             style={{ paddingLeft: `${depth * 18 + 4}px` }}
             onClick={() => selectCategory(cat)}
           >
+            <GripVertical className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-400 shrink-0 cursor-grab active:cursor-grabbing" />
+
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); if (hasKids) toggleExpand(cat.id); }}
@@ -356,7 +420,30 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
               </div>
             </div>
 
+            <div className="px-3 py-1.5 border-b border-slate-50 flex items-center gap-1.5 text-[10px] text-slate-400 font-medium">
+              <GripVertical className="w-3 h-3" />
+              항목을 끌어다 다른 카테고리 위에 놓으면 하위로 이동합니다.
+            </div>
+
             <div className="p-2 overflow-y-auto max-h-[560px] min-h-[300px]">
+              {draggingId && (
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setDragOverRoot(true); }}
+                  onDragLeave={() => setDragOverRoot(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (draggingId) moveCategory(draggingId, ROOT);
+                    clearDrag();
+                  }}
+                  className={`mb-2 border-2 border-dashed rounded-lg py-2 flex items-center justify-center gap-1.5 text-[11px] font-bold transition-colors ${
+                    dragOverRoot ? 'border-indigo-500 bg-indigo-50 text-indigo-600' : 'border-slate-200 text-slate-400'
+                  }`}
+                >
+                  <CornerLeftUp className="w-3.5 h-3.5" />
+                  최상위로 이동 (여기에 놓기)
+                </div>
+              )}
+
               {rootNodes.length === 0 ? (
                 <div className="py-20 text-center text-slate-400 text-xs">등록된 카테고리가 없습니다.</div>
               ) : matchIds && matchIds.size === 0 ? (
