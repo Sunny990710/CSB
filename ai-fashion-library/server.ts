@@ -150,6 +150,19 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+// 임시 진단용: 어떤 저장 모드/환경으로 떠 있는지 확인 (확인 후 제거 예정)
+app.get('/api/_debug', (_req, res) => {
+  res.json({
+    useBlob: USE_BLOB,
+    hasBlobToken: !!process.env.BLOB_READ_WRITE_TOKEN,
+    hasBlobStoreId: !!process.env.BLOB_STORE_ID,
+    hasOidcToken: !!process.env.VERCEL_OIDC_TOKEN,
+    commit: process.env.VERCEL_GIT_COMMIT_SHA || null,
+    cwd: process.cwd(),
+    seedExists: fs.existsSync(SEED_FILE),
+  });
+});
+
 app.get('/api/db', async (_req, res) => {
   res.json(await getDB());
 });
