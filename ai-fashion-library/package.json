@@ -6,7 +6,8 @@
   "description": "의류 샘플 대여 관리 시스템 — AI 연체 대응 메일링 에이전트 탑재 어드민",
   "scripts": {
     "dev": "tsx watch --ignore \"**/database.json\" --ignore \"**/data/**\" server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "vite build",
+    "build:node": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "NODE_ENV=production node dist/server.cjs",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
@@ -18,7 +19,8 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
-    "react-dom": "^19.0.1"
+    "react-dom": "^19.0.1",
+    "serverless-http": "^3.2.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.14",

@@ -168,7 +168,7 @@ export default function RentalManagerView({
           kind: 'borrow',
           title: s?.name || '샘플',
           sub: `${borrower.name} · ${borrower.groupName}`,
-          image: s?.imgFrontClean || s?.imgFront || s?.imgFlat,
+          image: s?.imgFrontClean || s?.imgFront || s?.imgFlat || s?.imgBackClean || s?.imgBack,
           code,
           brand: s?.brand,
           locationNo: s?.locationNo,
@@ -225,7 +225,7 @@ export default function RentalManagerView({
           kind: 'return',
           title: rental.sampleName,
           sub: `${rental.borrowerName} · ${rental.borrowerGroup}`,
-          image: s?.imgFrontClean || s?.imgFront || s?.imgFlat,
+          image: s?.imgFrontClean || s?.imgFront || s?.imgFlat || s?.imgBackClean || s?.imgBack,
           code,
           brand: s?.brand || rental.sampleBrand,
           locationNo: s?.locationNo,
@@ -647,11 +647,12 @@ export default function RentalManagerView({
                       <img
                         src={log.image}
                         alt={log.title}
+                        referrerPolicy="no-referrer"
                         className="w-12 h-14 object-cover rounded-lg border border-slate-100 bg-slate-50 shrink-0"
                       />
                     ) : (
-                      <div className={`p-1.5 rounded-lg border shrink-0 ${color}`}>
-                        <Icon className="w-3.5 h-3.5" />
+                      <div className="w-12 h-14 rounded-lg border border-slate-100 bg-slate-50 shrink-0 flex items-center justify-center">
+                        <Package className="w-5 h-5 text-slate-300" />
                       </div>
                     )}
                     <div className="min-w-0 flex-1">

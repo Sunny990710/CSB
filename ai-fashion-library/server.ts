@@ -597,4 +597,11 @@ async function startServer() {
   });
 }
 
-startServer();
+// Vercel(서버리스) 환경에서는 app.listen()을 호출하지 않고 app만 내보낸다.
+// 정적 파일 서빙은 vercel.json의 라우팅이 담당하므로, 여기서는 API 라우트만 사용된다.
+// 로컬/일반 Node 환경에서만 기존처럼 서버를 직접 띄운다.
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
