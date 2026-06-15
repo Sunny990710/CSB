@@ -19,7 +19,7 @@ const DATA_DIR = process.env.DATA_DIR || process.cwd();
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 const SEED_FILE = path.join(process.cwd(), 'database.json');
 
-const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [] };
+const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], categories: [] };
 
 // On first run with a fresh DATA_DIR, seed from the bundled database.json.
 function ensureDB() {
@@ -188,6 +188,91 @@ app.post('/api/samples/bulk-excel', (req, res) => {
   });
 });
 
+// 따옴표/줄바꿈을 처리하는 간단한 CSV 파서 → string[][]
+function parseCSV(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else { field += c; }
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\r') { /* skip */ }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else field += c;
+    }
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// Import rows from a Google Spreadsheet.
+// 기본은 API 키 없이 CSV 내보내기로 읽는다(시트는 "링크가 있는 모든 사용자: 뷰어" 공유 필요).
+// GOOGLE_SHEETS_API_KEY가 설정돼 있으면 Sheets API v4를 사용한다.
+// Body: { sheetId?, gid?, range? }. sheetId/gid 미지정 시 DEFAULT_SHEET_ID/DEFAULT_SHEET_GID(.env) 사용.
+app.post('/api/sheets/import', async (req, res) => {
+  const rawId = String(req.body.sheetId || process.env.DEFAULT_SHEET_ID || '').trim();
+  if (!rawId) {
+    return res.status(400).json({
+      success: false,
+      message: '불러올 스프레드시트가 없습니다. 시트 URL을 입력하거나, 서버 .env의 DEFAULT_SHEET_ID를 설정해 주세요.',
+    });
+  }
+
+  // URL이 들어오면 /d/<id>/ 와 #gid=<gid> 를 추출
+  let id = rawId;
+  const idMatch = rawId.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  if (idMatch) id = idMatch[1];
+
+  let gid = String(req.body.gid || process.env.DEFAULT_SHEET_GID || '0');
+  const gidMatch = rawId.match(/[#&?]gid=([0-9]+)/);
+  if (gidMatch) gid = gidMatch[1];
+
+  const key = process.env.GOOGLE_SHEETS_API_KEY;
+
+  try {
+    // --- API 키가 있으면 Sheets API 사용 -------------------------------
+    if (key) {
+      const r = String(req.body.range || 'A1:Z2000');
+      const url =
+        `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(id)}` +
+        `/values/${encodeURIComponent(r)}?key=${encodeURIComponent(key)}`;
+      const resp = await fetch(url);
+      const data: any = await resp.json();
+      if (!resp.ok) {
+        const msg = data?.error?.message || '구글 시트 조회에 실패했습니다. 공유 설정과 시트ID를 확인해 주세요.';
+        return res.status(resp.status).json({ success: false, message: msg });
+      }
+      return res.json({ success: true, values: data.values || [] });
+    }
+
+    // --- 키가 없으면 CSV 내보내기로 읽기 (인증 불필요) -----------------
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(id)}/export?format=csv&gid=${encodeURIComponent(gid)}`;
+    const resp = await fetch(csvUrl, { redirect: 'follow' });
+    const text = await resp.text();
+
+    // 공유가 안 돼 있으면 구글 로그인 HTML이 돌아온다.
+    if (!resp.ok || text.trim().startsWith('<!DOCTYPE') || text.includes('<html')) {
+      return res.status(403).json({
+        success: false,
+        message: '시트에 접근할 수 없습니다. 시트를 "링크가 있는 모든 사용자: 뷰어"로 공유했는지 확인해 주세요.',
+      });
+    }
+
+    return res.json({ success: true, values: parseCSV(text) });
+  } catch (error: any) {
+    console.error('Google Sheets import error:', error);
+    res.status(500).json({ success: false, message: '구글 시트 통신 중 오류가 발생했습니다: ' + error.message });
+  }
+});
+
 // Borrow.
 app.post('/api/rentals/borrow', (req, res) => {
   const { sampleCode, borrowerId, rentDays } = req.body;
@@ -278,7 +363,15 @@ app.post('/api/agent/analyze-image', async (req, res) => {
   "size": "[유추되는 사이즈: 'S', 'M', 'L', 'XL' 중 하나로 기재]",
   "condition": "[의류의 추정 보존 상태: '아주 좋음', '좋음', '양호함', '약간의 얼룩/손상 있음', '얼룩/손상 있음' 중 하나로 기재]",
   "season": "[적절한 시즌: 'SS', 'FW' 중 하나로 기재]",
-  "description": "[의류의 디자인 특징 및 디테일 요소를 1-2문장으로 기술한 설명 기재]"
+  "description": "[의류의 디자인 특징 및 디테일 요소를 1-2문장으로 기술한 설명 기재]",
+  "aiTags": {
+    "fit": ["[핏/실루엣 관련 짧은 영문 태그 1~3개. 예: 'regular fit', 'oversized', 'slim']"],
+    "design": ["[디자인/디테일 관련 짧은 영문 태그 1~4개. 예: 'half-zip', 'stand collar', 'ribbed cuffs']"],
+    "material": ["[소재/원단 관련 짧은 영문 태그 1~3개. 예: 'cotton', 'wool blend', 'knit']"],
+    "color": ["[색상 관련 짧은 영문 태그 1~3개. 예: 'cream', 'beige', 'navy']"],
+    "style": ["[스타일/무드 관련 짧은 영문 태그 1~3개. 예: 'casual', 'minimal', 'street']"],
+    "season": ["[활용하기 좋은 시즌 관련 짧은 영문 태그 1~3개. 예: 'spring', 'summer', 'fall', 'winter']"]
+  }
 }`;
 
     const imagePart = { inlineData: { mimeType, data: cleanedBase64 } };
@@ -309,6 +402,14 @@ app.post('/api/agent/analyze-image', async (req, res) => {
         condition: '아주 좋음',
         season: 'SS',
         description: '자연스러운 구김과 린넨 혼방 소재로 쾌적한 피팅감을 선사하는 데일리 스트라이프 셔츠.',
+        aiTags: {
+          fit: ['regular fit'],
+          design: ['stripe', 'button-up', 'long sleeves'],
+          material: ['linen blend', 'cotton'],
+          color: ['beige'],
+          style: ['casual', 'daily'],
+          season: ['spring', 'fall'],
+        },
       },
     });
   }
@@ -334,42 +435,51 @@ app.post('/api/samples/bulk-create-from-ai', (req, res) => {
   });
 
   items.forEach((item: any) => {
-    latestSeed++;
-    const generatedCode = `PCCAI${String(latestSeed).padStart(6, '0')}`;
+    // 상품코드는 스프레드시트에서 불러온 값(item.code)을 우선 사용하고,
+    // 없을 때만 순차 발급 코드를 생성한다. (AI가 코드를 임의 생성하지 않음)
+    let generatedCode: string;
+    if (item.code && String(item.code).trim()) {
+      generatedCode = String(item.code).trim();
+    } else {
+      latestSeed++;
+      generatedCode = `PCCAI${String(latestSeed).padStart(6, '0')}`;
+    }
 
     const sampleRecord = {
       id: db.samples.length + 1,
       regDate: nowStr,
-      status: '대여가능',
+      status: item.status || '대여가능',
       brand: item.brand || '중국포인포',
+      specialBrand: item.specialBrand || '',
       locationNo: item.locationNo || 'H-' + Math.floor(Math.random() * 800 + 100),
       code: generatedCode,
       name: item.name || `${generatedCode} AI 등록 의류`,
       category: item.category || '유형화샘플',
-      registerer: '허경아',
+      registerer: item.registerer || '허경아',
       useYn: '사용',
       color: item.color || '베이지',
       gender: item.gender || 'U',
       country: item.country || 'KR',
-      price: Number(item.price) * 2 || 29000,
+      price: Number(item.price) || 29000,
       description: item.description || '',
-      brandCode: item.brand === 'GU' ? 'GU_JP' : item.brand === 'UNIQLO' ? 'UNIQLO_JP' : 'POINFO_CN',
+      brandCode: item.brandCode || (item.brand === 'GU' ? 'GU_JP' : item.brand === 'UNIQLO' ? 'UNIQLO_JP' : 'POINFO_CN'),
       season: item.season || 'SS',
       material: item.material || '면 100%',
       size: item.size || 'M',
       condition: item.condition || '아주 좋음',
+      location: item.location || '',
       imgFront: item.imgFront || '',
       imgBack: item.imgBack || '',
       rentalFee: Number(item.price) || 15000,
       overdueFee1: 10000,
       overdueFee2: 20000,
       rentalPeriod: 28,
-      year: '2026',
-      month: '06',
+      year: item.year || '2026',
+      month: item.month || '06',
       views: 0,
       topic: item.name || '',
       classification: '셔츠, 블라우스(PCCAI03)',
-      itemType: item.name ? item.name.split(' ').pop() : '셔츠',
+      itemType: item.itemType || (item.name ? item.name.split(' ').pop() : '셔츠'),
       hangeringNo: 'Hanger-' + Math.floor(Math.random() * 200 + 100),
       overdueCharge: 0,
       overdueDays: 0,

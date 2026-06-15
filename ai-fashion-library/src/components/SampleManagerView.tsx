@@ -1,20 +1,166 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, Edit2, Trash2, Search, FileSpreadsheet, Image as ImageIcon, 
   Upload, X, Check, RefreshCw, AlertCircle, FileText, CheckCircle, ChevronDown, Eye,
-  LayoutGrid, List, HelpCircle, Camera, Sparkles, Download, Share2
+  LayoutGrid, List, HelpCircle, Camera, Sparkles, Download, Share2, Tag
 } from 'lucide-react';
-import { Sample, SampleStatus, Rental } from '../types';
+import { Sample, SampleStatus, Rental, Category, AiTagGroups, AiTagCategory } from '../types';
+import { DateRangeCalendar } from './DateRangeCalendar';
+
+// AI 생성 태그 카테고리 정의 (표시 순서, 한글 라벨, 입력 안내 문구)
+const AI_TAG_CATEGORIES: { key: AiTagCategory; label: string; placeholder: string }[] = [
+  { key: 'fit', label: '핏', placeholder: '착용하였을 때의 전체적인 핏을 입력하세요' },
+  { key: 'design', label: '디자인', placeholder: '돋보이는 디자인 특징을 입력하세요' },
+  { key: 'material', label: '소재', placeholder: '소재에 대한 설명을 입력하세요' },
+  { key: 'color', label: '색상', placeholder: '색상에 대한 설명을 입력하세요' },
+  { key: 'style', label: '스타일', placeholder: '분위기나 스타일을 입력하세요' },
+  { key: 'season', label: '활용 시즌', placeholder: '활용하기 좋은 시즌을 입력하세요' },
+];
 
 interface SampleManagerViewProps {
   samples: Sample[];
   onSaveDB: (newSamples: Sample[]) => void;
   forceTab?: 'list' | 'bulk-excel' | 'bulk-images';
   rentals?: Rental[];
+  categories?: Category[];
 }
 
-export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals = [] }: SampleManagerViewProps) {
+// 상품코드/상품명으로 검색해서 매칭 대상 샘플을 고르는 콤보박스 (의류가 많을 때 드롭다운 대신 사용)
+function SampleMatchCombobox({
+  samples,
+  value,
+  onChange,
+}: {
+  samples: Sample[];
+  value: string | null;
+  onChange: (code: string | null) => void;
+}) {
+  const matched = samples.find((s) => s.code === value) || null;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery('');
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  const q = query.trim().toLowerCase();
+  const results = (
+    q
+      ? samples.filter(
+          (s) =>
+            s.code.toLowerCase().includes(q) || (s.name || '').toLowerCase().includes(q)
+        )
+      : samples
+  ).slice(0, 50);
+
+  return (
+    <div className="relative" ref={boxRef}>
+      {matched && !open ? (
+        <div className="w-full flex items-center justify-between bg-white border border-slate-250 rounded text-[11px] font-sans">
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(true);
+              setQuery('');
+            }}
+            className="flex-1 min-w-0 text-left p-1.5 truncate cursor-pointer"
+            title="다시 검색"
+          >
+            <span className="font-mono font-bold text-indigo-650">[{matched.code}]</span>{' '}
+            <span className="text-slate-700">{matched.name}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onChange(null);
+              setQuery('');
+            }}
+            className="p-1.5 text-slate-400 hover:text-rose-500 shrink-0 cursor-pointer"
+            title="선택 해제"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      ) : (
+        <div className="relative">
+          <Search className="absolute left-2 top-2 w-3 h-3 text-slate-400 pointer-events-none" />
+          <input
+            type="text"
+            value={query}
+            autoFocus={open}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            placeholder="상품코드 / 상품명 검색"
+            className="w-full bg-white border border-slate-250 pl-6 pr-2 py-1.5 rounded text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+          />
+        </div>
+      )}
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-xl max-h-52 overflow-y-auto py-1">
+          {results.length === 0 ? (
+            <div className="px-3 py-3 text-[11px] text-slate-400 text-center">
+              검색 결과가 없습니다.
+            </div>
+          ) : (
+            results.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => {
+                  onChange(s.code);
+                  setOpen(false);
+                  setQuery('');
+                }}
+                className={`w-full text-left px-3 py-1.5 text-[11px] hover:bg-indigo-50 flex flex-col cursor-pointer ${
+                  s.code === value ? 'bg-indigo-50/60' : ''
+                }`}
+              >
+                <span className="font-mono font-bold text-indigo-650">[{s.code}]</span>
+                <span className="text-slate-600 truncate">{s.name}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals = [], categories = [] }: SampleManagerViewProps) {
+  // Active category names from the category manager (fallback to legacy defaults)
+  const activeCategoryNames = categories.filter((c) => c.useYn === '사용').map((c) => c.name);
+  const fallbackCategoryNames = ['오리지널', '자사샘플', '중국샘플', '유형화샘플', 'EP샘플'];
+  // 카테고리 노출 순서 고정: 오리지널 → 유형화샘플 → EP샘플 → 자사샘플 → 중국샘플
+  const CATEGORY_ORDER = ['오리지널', '유형화샘플', 'EP샘플', '자사샘플', '중국샘플'];
+  const sortByCategoryOrder = (arr: string[]) =>
+    [...arr].sort((a, b) => {
+      const ia = CATEGORY_ORDER.indexOf(a);
+      const ib = CATEGORY_ORDER.indexOf(b);
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    });
+  const categoryNames = sortByCategoryOrder(
+    activeCategoryNames.length > 0 ? activeCategoryNames : fallbackCategoryNames
+  );
+  const categoryOptionsWith = (current?: string) => {
+    const list = [...categoryNames];
+    if (current && !list.includes(current)) list.unshift(current);
+    return list;
+  };
   // Main view state
   const [activeTab, setActiveTab] = useState<'list' | 'bulk-excel' | 'bulk-images'>(forceTab || 'list');
 
@@ -28,23 +174,43 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
   const [selectedBrand, setSelectedBrand] = useState('전체');
   const [selectedCategory, setSelectedCategory] = useState('전체');
   const [selectedStatus, setSelectedStatus] = useState('전체');
-  const [selectedCondition, setSelectedCondition] = useState('전체');
+  const [selectedRegisterer, setSelectedRegisterer] = useState('전체');
+  const [regDateFrom, setRegDateFrom] = useState('');
+  const [regDateTo, setRegDateTo] = useState('');
+  const [regDateOpen, setRegDateOpen] = useState(false);
+  const regDateFilterRef = useRef<HTMLDivElement>(null);
+  const regDatePopoverRef = useRef<HTMLDivElement>(null);
+  const [regDatePopoverPos, setRegDatePopoverPos] = useState({ top: 0, left: 0 });
   const [viewMode, setViewMode] = useState<'table' | 'grid'>('table');
+  // 테이블에서 상품 이미지 앞/뒤 전환 상태 (true = 뒷면)
+  const [imageFlips, setImageFlips] = useState<Record<number, boolean>>({});
+  const toggleImageFlip = (id: number) => setImageFlips((p) => ({ ...p, [id]: !p[id] }));
+  // 페이지네이션
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  // 등록일 정렬 (desc = 최신순, asc = 오래된순)
+  const [sortDir, setSortDir] = useState<'desc' | 'asc' | null>(null);
+  const toggleSortByDate = () => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
+  // 엑셀 다운로드용 선택 상태
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const toggleSelect = (id: number) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   // Single sample modal or edit form states
   const [editingSample, setEditingSample] = useState<Sample | null>(null);
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [viewingDetail, setViewingDetail] = useState<Sample | null>(null);
-  const [autoFillOn, setAutoFillOn] = useState(true);
   const [viewingDetailCuts, setViewingDetailCuts] = useState(false);
-  const [colorInput, setColorInput] = useState('');
-  const [materialInput, setMaterialInput] = useState('');
+  const [aiTagInputs, setAiTagInputs] = useState<Partial<Record<AiTagCategory, string>>>({});
+  const [aiTagLoading, setAiTagLoading] = useState(false);
 
   // Active preview mode for side (front or back)
   const [activePreviewSide, setActivePreviewSide] = useState<'front' | 'back'>('front');
-  const [showOriginal, setShowOriginal] = useState<boolean>(false);
-  const [showEditMenu, setShowEditMenu] = useState<boolean>(false);
-  const [isGeneratingBg, setIsGeneratingBg] = useState<boolean>(false);
 
   const getStatusBadgeStyle = (st: string) => {
     switch (st) {
@@ -59,6 +225,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
   // Sync active preview tab to front side whenever editing target changes
   useEffect(() => {
     setActivePreviewSide('front');
+    setAiTagInputs({});
   }, [editingSample?.id]);
 
   // New single sample form
@@ -98,6 +265,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
     isBack: boolean;
     assigned: boolean;
   }[]>([]);
+  const [bulkImagesViewMode, setBulkImagesViewMode] = useState<'card' | 'table'>('card');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // New States for AI Smart Bulk Wardrobe creator (Mode B)
@@ -122,10 +290,55 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
     category: string;
     description: string;
     season: string;
+    // 스프레드시트(또는 엑셀 붙여넣기)에서 매칭된 식별 정보 — AI가 생성하지 않음
+    code: string;
+    locationNo: string;
+    status: string;
+    registerer: string;
+    specialBrand: string;
+    brandCode: string;
+    location: string;
+    year: string;
+    month: string;
+    itemType: string;
+    metaMatched?: boolean;
     activeImgTab?: 'front' | 'back';
   }[]>([]);
+
+  // 상품 메타데이터 불러오기 (구글 스프레드시트 / 엑셀 텍스트 붙여넣기)
+  const [sheetId, setSheetId] = useState('');
+  const [sheetRange, setSheetRange] = useState('A1:Z2000');
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [importInfo, setImportInfo] = useState('');
+  const [importedMeta, setImportedMeta] = useState<Record<string, {
+    code: string;
+    name: string;
+    locationNo: string;
+    color: string;
+    gender: string;
+    country: string;
+    price: number;
+    description: string;
+    brandCode: string;
+    location: string;
+    year: string;
+    month: string;
+    season: string;
+    itemType: string;
+    specialBrand: string;
+    material: string;
+  }>>({});
   const [aiViewMode, setAiViewMode] = useState<'card' | 'table'>('card');
   const aiFileInputRef = useRef<HTMLInputElement>(null);
+
+  const getRegDateKey = (regDate?: string) => (regDate || '').substring(0, 10);
+  const regDateFilterLabel =
+    !regDateFrom && !regDateTo
+      ? '등록일: 전체'
+      : regDateFrom && regDateTo && regDateFrom === regDateTo
+        ? `등록일: ${regDateFrom}`
+        : `등록일: ${regDateFrom || '…'} ~ ${regDateTo || '…'}`;
 
   // Filtered samples
   const filteredSamples = samples.filter((s) => {
@@ -143,14 +356,146 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
     const matchBrand = selectedBrand === '전체' || s.brand === selectedBrand;
     const matchStatus = selectedStatus === '전체' || s.status === selectedStatus;
-    const matchCondition = selectedCondition === '전체' || (s.condition || '아주 좋음') === selectedCondition;
+    const matchRegisterer = selectedRegisterer === '전체' || s.registerer === selectedRegisterer;
+
+    const sampleDate = getRegDateKey(s.regDate);
+    const matchRegDateFrom = !regDateFrom || (!!sampleDate && sampleDate >= regDateFrom);
+    const matchRegDateTo = !regDateTo || (!!sampleDate && sampleDate <= regDateTo);
     
-    return matchQuery && matchBrand && matchCategory && matchStatus && matchCondition && matchCountry;
+    return matchQuery && matchBrand && matchCategory && matchStatus && matchRegisterer && matchCountry
+      && matchRegDateFrom && matchRegDateTo;
   });
+
+  // --- 정렬(등록일) -----------------------------------------------------
+  const sortedSamples = sortDir
+    ? [...filteredSamples].sort((a, b) =>
+        sortDir === 'asc'
+          ? (a.regDate || '').localeCompare(b.regDate || '')
+          : (b.regDate || '').localeCompare(a.regDate || '')
+      )
+    : filteredSamples;
+
+  // --- Pagination (표/그리드 공통) ---------------------------------------
+  const totalPages = Math.max(1, Math.ceil(sortedSamples.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const pagedSamples = sortedSamples.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  // --- 선택 / 엑셀 다운로드 ----------------------------------------------
+  const allFilteredSelected =
+    sortedSamples.length > 0 && sortedSamples.every((s) => selectedIds.has(s.id));
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      if (sortedSamples.every((s) => prev.has(s.id)) && sortedSamples.length > 0) {
+        const next = new Set(prev);
+        sortedSamples.forEach((s) => next.delete(s.id));
+        return next;
+      }
+      const next = new Set(prev);
+      sortedSamples.forEach((s) => next.add(s.id));
+      return next;
+    });
+  };
+
+  const handleExcelDownload = () => {
+    // 선택된 항목이 있으면 선택분, 없으면 현재 필터 결과 전체를 내보냄
+    const target = selectedIds.size > 0
+      ? sortedSamples.filter((s) => selectedIds.has(s.id))
+      : sortedSamples;
+
+    if (target.length === 0) {
+      alert('다운로드할 상품이 없습니다.');
+      return;
+    }
+
+    const headers = ['번호', '상품코드', '상품명', '카테고리', '브랜드', '특화 브랜드', '위치번호', '원산지', '소재', '색상', '컨디션', '상태', '등록일', '등록자'];
+    const esc = (v: unknown) => {
+      const str = v == null ? '' : String(v);
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+    const rows = target.map((s) => [
+      s.id, s.code, s.name, s.category, s.brand, s.specialBrand || '', s.locationNo,
+      s.country, s.material, s.color, s.condition || '아주 좋음', s.status, s.regDate, s.registerer,
+    ].map(esc).join(','));
+
+    // UTF-8 BOM 추가로 Excel 한글 깨짐 방지
+    const csv = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const today = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `상품목록_${today}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // 필터/페이지크기 변경 시 첫 페이지로 이동
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedBrand, selectedCategory, selectedStatus, selectedRegisterer, selectedCountry, regDateFrom, regDateTo, pageSize]);
+
+  useEffect(() => {
+    if (!regDateOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        regDateFilterRef.current?.contains(target) ||
+        regDatePopoverRef.current?.contains(target)
+      ) return;
+      setRegDateOpen(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [regDateOpen]);
+
+  useEffect(() => {
+    if (!regDateOpen) return;
+    const updatePos = () => {
+      if (!regDateFilterRef.current) return;
+      const rect = regDateFilterRef.current.getBoundingClientRect();
+      const popoverWidth = 560;
+      let left = rect.left;
+      if (left + popoverWidth > window.innerWidth - 16) {
+        left = Math.max(16, window.innerWidth - popoverWidth - 16);
+      }
+      setRegDatePopoverPos({ top: rect.bottom + 4, left });
+    };
+    updatePos();
+    window.addEventListener('resize', updatePos);
+    window.addEventListener('scroll', updatePos, true);
+    return () => {
+      window.removeEventListener('resize', updatePos);
+      window.removeEventListener('scroll', updatePos, true);
+    };
+  }, [regDateOpen]);
+
+  // 국가 변경 시 카테고리 선택값 초기화 (국가별 카테고리 목록이 달라지므로)
+  useEffect(() => {
+    setSelectedCategory('전체');
+  }, [selectedCountry]);
+
+  // 마지막으로 사용한 스프레드시트 주소 복원 (매번 입력하지 않도록)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('aiBulkSheetId');
+      if (saved) setSheetId(saved);
+    } catch { /* noop */ }
+  }, []);
 
   // Get list of unique brands / categories
   const uniqueBrands = ['전체', ...Array.from(new Set(samples.map((s) => s.brand)))];
-  const uniqueCategories = ['전체', '오리지널', '유형화샘플', 'EP샘플', '자사샘플'];
+  const uniqueRegisterers = ['전체', ...Array.from(new Set(samples.map((s) => s.registerer).filter(Boolean)))];
+  // 국가별 카테고리 매핑 (한국: 오리지널/유형화샘플/EP샘플/자사샘플, 중국: 중국샘플)
+  const categoriesByCountry: Record<string, string[]> = {
+    한국: ['오리지널', '유형화샘플', 'EP샘플', '자사샘플'],
+    중국: ['중국샘플'],
+  };
+  const uniqueCategories =
+    selectedCountry === '한국' || selectedCountry === '중국'
+      ? ['전체', ...categoriesByCountry[selectedCountry]]
+      : ['전체', ...categoryNames];
 
   // Excel file / text parser helper (tsv parser)
   const handleParseExcelText = () => {
@@ -319,8 +664,9 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
           }
         }
 
-        // Check if filename contains indications of "back/뒤"
+        // Check if filename contains indications of back image (예: b1)
         const isBack = 
+          nameLower.includes('b1') ||
           nameLower.includes('back') || 
           nameLower.includes('뒤') || 
           nameLower.includes('_back') || 
@@ -386,6 +732,297 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
     });
   };
 
+  // --- 상품 메타데이터 불러오기 (스프레드시트/엑셀) ----------------------
+  type ImportedMeta = (typeof importedMeta)[string];
+
+  // 국가/성별 코드를 시스템 표준값으로 정규화
+  const normCountry = (v: string): string => {
+    const t = (v || '').trim();
+    if (!t) return '';
+    if (t.includes('중국') || /cn/i.test(t)) return 'CN';
+    if (t.includes('한국') || /kr/i.test(t)) return 'KR';
+    if (t.includes('일본') || /jp/i.test(t)) return 'JP';
+    if (t.includes('미국') || /us/i.test(t)) return 'US';
+    return t;
+  };
+  const normGender = (v: string): string => {
+    const t = (v || '').trim();
+    if (!t) return '';
+    if (t.includes('여') || /^f/i.test(t)) return 'F';
+    if (t.includes('남') || /^m/i.test(t)) return 'M';
+    if (t.includes('공용') || t.includes('공통') || /^u/i.test(t)) return 'U';
+    return t;
+  };
+
+  // 헤더 이름 → 필드 매핑 (열 순서가 달라도 헤더 이름으로 자동 인식)
+  const HEADER_ALIASES: Record<string, string[]> = {
+    code: ['샘플코드', '상품코드', '코드'],
+    name: ['샘플명', '상품명'],
+    locationNo: ['위치번호'],
+    color: ['칼라설명', '색상', '컬러', '칼라'],
+    gender: ['성별코드', '성별'],
+    country: ['국가', '원산지'],
+    price: ['가격', '대여료'],
+    description: ['샘플설명', '설명'],
+    brandCode: ['브랜드코드'],
+    location: ['위치'],
+    year: ['연도'],
+    month: ['달', '월'],
+    season: ['시즌'],
+    itemType: ['아이템코드', '아이템'],
+    specialBrand: ['특화샘플', '특화브랜드'],
+    material: ['소재'],
+  };
+  const CODE_HEADERS = ['샘플코드', '상품코드', '코드'];
+
+  // 컬럼 순서(폴백):
+  // 0:중복여부 1:샘플코드 2:샘플명 3:위치번호 4:칼라설명 5:성별코드 6:국가 7:가격
+  // 8:샘플설명 9:브랜드코드 10:위치 11:연도 12:달 13:시즌 14:아이템코드 15:특화샘플 16:소재
+  const FALLBACK_COLS: Record<string, number> = {
+    code: 1, name: 2, locationNo: 3, color: 4, gender: 5, country: 6, price: 7,
+    description: 8, brandCode: 9, location: 10, year: 11, month: 12, season: 13,
+    itemType: 14, specialBrand: 15, material: 16,
+  };
+
+  const parseMetaRows = (rows: string[][]): Record<string, ImportedMeta> => {
+    const map: Record<string, ImportedMeta> = {};
+    if (!rows || rows.length === 0) return map;
+
+    const norm = (s: string) => (s || '').replace(/\s+/g, '').trim();
+
+    // 헤더 행 찾기 (샘플코드/상품코드/코드 헤더를 가진 첫 행)
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(rows.length, 5); i++) {
+      const normed = (rows[i] || []).map(norm);
+      if (normed.some((h) => CODE_HEADERS.includes(h))) { headerIdx = i; break; }
+    }
+
+    let colIndex: Record<string, number> = {};
+    let dataStart = 0;
+    if (headerIdx >= 0) {
+      const header = rows[headerIdx].map(norm);
+      Object.entries(HEADER_ALIASES).forEach(([field, aliases]) => {
+        const idx = header.findIndex((h) => aliases.includes(h));
+        if (idx >= 0) colIndex[field] = idx;
+      });
+      dataStart = headerIdx + 1;
+    } else {
+      colIndex = { ...FALLBACK_COLS };
+      dataStart = 0;
+    }
+
+    const codeCol = colIndex.code ?? 1;
+    const get = (cols: string[], field: string): string => {
+      const i = colIndex[field];
+      return i === undefined ? '' : (cols[i] || '').trim();
+    };
+
+    for (let r = dataStart; r < rows.length; r++) {
+      const cols = rows[r];
+      if (!cols || cols.length === 0) continue;
+      const code = (cols[codeCol] || '').trim();
+      if (!code) continue;
+      if (CODE_HEADERS.includes(norm(code))) continue; // 중복 헤더 방지
+      map[code] = {
+        code,
+        name: get(cols, 'name'),
+        locationNo: get(cols, 'locationNo'),
+        color: get(cols, 'color'),
+        gender: normGender(get(cols, 'gender')),
+        country: normCountry(get(cols, 'country')),
+        price: Number(get(cols, 'price').replace(/[^0-9.]/g, '')) || 0,
+        description: get(cols, 'description'),
+        brandCode: get(cols, 'brandCode'),
+        location: get(cols, 'location'),
+        year: get(cols, 'year'),
+        month: get(cols, 'month'),
+        season: get(cols, 'season'),
+        itemType: get(cols, 'itemType'),
+        specialBrand: get(cols, 'specialBrand'),
+        material: get(cols, 'material'),
+      };
+    }
+    return map;
+  };
+
+  // 파일명에서 상품코드 매칭 (예: PCCAI032991_b1.png ↔ PCCAI032991)
+  const matchCodeInFilename = (filename: string, codes: string[]): string | null => {
+    const lower = filename.toLowerCase();
+    // 더 긴 코드를 우선 매칭 (부분 포함 충돌 방지)
+    const sorted = [...codes].sort((a, b) => b.length - a.length);
+    return sorted.find((c) => c && lower.includes(c.toLowerCase())) || null;
+  };
+
+  const mergeMetaIntoDraft = <T extends { filenameFront: string; filenameBack?: string }>(
+    item: T,
+    meta: Record<string, ImportedMeta>
+  ): (T & Partial<ImportedMeta> & { metaMatched: boolean }) | null => {
+    const codes = Object.keys(meta);
+    const matched =
+      matchCodeInFilename(item.filenameFront, codes) ||
+      (item.filenameBack ? matchCodeInFilename(item.filenameBack, codes) : null);
+    if (!matched) return null;
+    const m = meta[matched];
+    const keep = (sheet: string, prev: any) => (sheet && String(sheet).trim() ? sheet : prev);
+    return {
+      ...item,
+      code: m.code,
+      name: keep(m.name, (item as any).name),
+      locationNo: keep(m.locationNo, (item as any).locationNo),
+      color: keep(m.color, (item as any).color),
+      gender: keep(m.gender, (item as any).gender),
+      country: keep(m.country, (item as any).country),
+      price: m.price || (item as any).price,
+      description: keep(m.description, (item as any).description),
+      brandCode: keep(m.brandCode, (item as any).brandCode),
+      location: keep(m.location, (item as any).location),
+      year: keep(m.year, (item as any).year),
+      month: keep(m.month, (item as any).month),
+      season: keep(m.season, (item as any).season),
+      itemType: keep(m.itemType, (item as any).itemType),
+      specialBrand: keep(m.specialBrand, (item as any).specialBrand),
+      material: keep(m.material, (item as any).material),
+      metaMatched: true,
+    };
+  };
+
+  // 이미 업로드된 카드들에 메타데이터 재적용
+  const applyMetaToDrafts = (meta: Record<string, ImportedMeta>) => {
+    let matchCount = 0;
+    setAiDraftItems((prev) =>
+      prev.map((item) => {
+        const merged = mergeMetaIntoDraft(item, meta);
+        if (merged) {
+          matchCount++;
+          return merged as typeof item;
+        }
+        return item;
+      })
+    );
+    return matchCount;
+  };
+
+  const ingestMeta = (meta: Record<string, ImportedMeta>, source: string, rowCount = 0) => {
+    const count = Object.keys(meta).length;
+    if (count === 0) {
+      if (rowCount <= 1) {
+        // 헤더만 읽힘 → 데이터가 다른 탭(gid)에 있을 가능성이 큼
+        setImportError(
+          `데이터가 ${rowCount}행만 읽혔습니다. 데이터가 있는 탭을 연 상태에서 브라우저 주소창의 ` +
+            'URL(끝에 #gid=숫자 포함)을 그대로 위 입력칸에 붙여넣고 다시 불러오기 해주세요.'
+        );
+      } else {
+        setImportError(
+          `불러온 데이터(${rowCount}행)에서 샘플코드 열을 찾지 못했습니다. ` +
+            '첫 행에 "샘플코드" 헤더가 있는지, 시트 공유가 "링크가 있는 모든 사용자: 뷰어"인지 확인해 주세요.'
+        );
+      }
+      return;
+    }
+    setImportError('');
+    const nextMeta = { ...importedMeta, ...meta };
+    setImportedMeta(nextMeta);
+    const matched = applyMetaToDrafts(nextMeta);
+    setImportInfo(
+      `${source}에서 ${count}건의 상품 정보를 불러왔습니다. ` +
+        (aiDraftItems.length > 0
+          ? `업로드된 이미지 ${matched}건과 상품코드 매칭 완료.`
+          : `이제 이미지를 업로드하면 파일명의 상품코드로 자동 매칭됩니다.`)
+    );
+  };
+
+  const handleImportFromSheets = () => {
+    setImportLoading(true);
+    setImportError('');
+    setImportInfo('');
+    fetch('/api/sheets/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sheetId: sheetId.trim() }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.success) {
+          setImportError(data.message || '구글 시트 불러오기에 실패했습니다.');
+          return;
+        }
+        // 마지막으로 사용한 시트 주소를 기억해 다음에 자동으로 채워준다.
+        if (sheetId.trim()) {
+          try { localStorage.setItem('aiBulkSheetId', sheetId.trim()); } catch { /* noop */ }
+        }
+        const values = (data.values || []) as string[][];
+        const meta = parseMetaRows(values);
+        ingestMeta(meta, '구글 스프레드시트', values.length);
+      })
+      .catch(() => setImportError('구글 시트 통신에 실패했습니다.'))
+      .finally(() => setImportLoading(false));
+  };
+
+  const handleImportFromText = () => {
+    if (!bulkTextInput.trim()) {
+      setImportError('붙여넣은 텍스트가 비어 있습니다.');
+      return;
+    }
+    const rows = bulkTextInput
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => line.split(/\t|,/));
+    const meta = parseMetaRows(rows);
+    ingestMeta(meta, '붙여넣은 텍스트');
+  };
+
+  const handleGenerateAiTags = () => {
+    if (!editingSample) return;
+    const image = editingSample.imgFront || editingSample.imgBack;
+    if (!image) {
+      alert('AI 태그를 생성하려면 전면 또는 후면 이미지가 필요합니다.');
+      return;
+    }
+    setAiTagLoading(true);
+    fetch('/api/agent/analyze-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64: image }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.analysis) {
+          const ana = data.analysis;
+          const raw = ana.aiTags;
+          const normalizeArr = (v: any): string[] =>
+            Array.isArray(v) ? v.map((t: any) => String(t).trim()).filter(Boolean) : [];
+
+          // 구조화 응답(객체) 우선, 과거 배열 응답이면 design 카테고리로 수용
+          const incoming: AiTagGroups = {};
+          if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+            AI_TAG_CATEGORIES.forEach(({ key }) => {
+              const arr = normalizeArr(raw[key]);
+              if (arr.length) incoming[key] = arr;
+            });
+          } else if (Array.isArray(raw)) {
+            const arr = normalizeArr(raw);
+            if (arr.length) incoming.design = arr;
+          }
+
+          setEditingSample((prev) => {
+            if (!prev) return prev;
+            const existing = prev.aiTags || {};
+            const merged: AiTagGroups = { ...existing };
+            AI_TAG_CATEGORIES.forEach(({ key }) => {
+              const combined = Array.from(new Set([...(existing[key] || []), ...(incoming[key] || [])]));
+              if (combined.length) merged[key] = combined;
+            });
+            return { ...prev, aiTags: merged };
+          });
+        }
+      })
+      .catch((err) => {
+        console.error('AI tag generation error:', err);
+      })
+      .finally(() => setAiTagLoading(false));
+  };
+
   const triggerAiAnalysisForItem = (itemId: string, base64: string) => {
     fetch('/api/agent/analyze-image', {
       method: 'POST',
@@ -398,22 +1035,18 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
         const ana = data.analysis;
         setAiDraftItems(prev => prev.map(item => {
           if (item.id === itemId) {
+            // AI는 색상/컨디션/의류 계열/소재만 자동 기입한다.
+            // 단, 스프레드시트에서 이미 값을 불러온 경우(=item에 값 있음) 시트 값을 우선 보존한다.
+            // 컨디션은 시트 컬럼에 없으므로 AI 분석값을 사용한다.
+            // 상품코드·상품명·위치번호·상태·등록자·특화브랜드 등은 AI가 임의 생성하지 않음(스프레드시트로 입력).
             return {
               ...item,
               isAnalyzing: false,
               isAnalyzed: true,
-              name: ana.name || item.name,
-              brand: ana.brand || item.brand,
-              price: Number(ana.price) || item.price,
-              material: ana.material || item.material,
-              size: ana.size || item.size,
+              material: item.material || ana.material,
               condition: ana.condition || item.condition,
-              color: ana.color || item.color,
-              country: ana.country || item.country,
-              gender: ana.gender || item.gender,
-              category: ana.category || item.category,
-              description: ana.description || item.description,
-              season: ana.season || item.season
+              color: item.color || ana.color,
+              gender: item.gender || ana.gender,
             };
           }
           return item;
@@ -520,7 +1153,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
           backFile = backs[0] || groupFiles[1] || null;
         }
 
-        const draft = {
+        const baseDraft = {
           id,
           filenameFront: frontFile.filename,
           filenameBack: backFile ? backFile.filename : undefined,
@@ -529,19 +1162,34 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
           isAnalyzing: true,
           isAnalyzed: false,
           name: base.substring(0, 40),
-          brand: '중국포인포',
-          price: 29000,
-          material: '코튼 100%',
+          brand: '',
+          price: 0,
+          material: '',
           size: 'M',
           condition: '아주 좋음',
-          color: '베이지',
+          color: '',
           country: 'KR',
-          gender: 'U',
-          category: '유형화샘플',
+          gender: '',
+          category: '',
           description: '',
           season: 'SS',
+          code: '',
+          locationNo: '',
+          status: '대여가능',
+          registerer: '',
+          specialBrand: '',
+          brandCode: '',
+          location: '',
+          year: '',
+          month: '',
+          itemType: '',
+          metaMatched: false,
           activeImgTab: 'front' as 'front' | 'back'
         };
+
+        // 이미 불러온 스프레드시트 메타데이터가 있으면 파일명 상품코드로 매칭
+        const merged = mergeMetaIntoDraft(baseDraft, importedMeta);
+        const draft = (merged || baseDraft) as typeof baseDraft;
 
         triggerAiAnalysisForItem(id, frontFile.base64);
         return draft;
@@ -555,8 +1203,10 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
     if (aiDraftItems.length === 0) return;
 
     const payloadItems = aiDraftItems.map(item => ({
+      code: item.code,
       name: item.name,
       brand: item.brand,
+      specialBrand: item.specialBrand,
       price: item.price,
       material: item.material,
       size: item.size,
@@ -565,8 +1215,16 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
       country: item.country,
       gender: item.gender,
       category: item.category,
+      locationNo: item.locationNo,
+      status: item.status,
+      registerer: item.registerer,
       description: item.description,
       season: item.season,
+      brandCode: item.brandCode,
+      location: item.location,
+      year: item.year,
+      month: item.month,
+      itemType: item.itemType,
       imgFront: item.base64Front,
       imgBack: item.base64Back || ''
     }));
@@ -611,6 +1269,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
       regDate: new Date().toISOString().replace('T', ' ').substring(0, 19),
       status: (newSample.status as SampleStatus) || '대여가능',
       brand: newSample.brand || '중국포인포',
+      specialBrand: newSample.specialBrand || '',
       locationNo: newSample.locationNo || '0',
       code: newSample.code,
       name: newSample.name || `${newSample.code} 샘플 의류`,
@@ -732,131 +1391,6 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
     }
   };
 
-  // Generate beautiful clean product cutout using pixel chroma-key & soft drop shadow
-  const generateBgRemoval = (side: 'front' | 'back') => {
-    if (!editingSample || isGeneratingBg) return;
-    
-    const targetImg = side === 'front' ? editingSample.imgFront : editingSample.imgBack;
-    
-    if (!targetImg) {
-      alert(`${side === 'front' ? '전면' : '후면'} 이미지가 등록되어 있어야 누끼컷 생성이 가능합니다.`);
-      return;
-    }
-
-    setIsGeneratingBg(true);
-    
-    setTimeout(() => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.src = targetImg;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          // Draw original image to scan pixels
-          ctx.drawImage(img, 0, 0);
-          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const data = imgData.data;
-          
-          // Sample corner background color
-          let sumR = 0, sumG = 0, sumB = 0, sampleCount = 0;
-          const sampleSize = Math.min(15, Math.floor(canvas.width * 0.05));
-          
-          // top-left corner
-          for (let y = 0; y < sampleSize; y++) {
-            for (let x = 0; x < sampleSize; x++) {
-              const idx = (y * canvas.width + x) * 4;
-              sumR += data[idx];
-              sumG += data[idx+1];
-              sumB += data[idx+2];
-              sampleCount++;
-            }
-          }
-          // top-right corner
-          for (let y = 0; y < sampleSize; y++) {
-            for (let x = canvas.width - sampleSize; x < canvas.width; x++) {
-              const idx = (y * canvas.width + x) * 4;
-              sumR += data[idx];
-              sumG += data[idx+1];
-              sumB += data[idx+2];
-              sampleCount++;
-            }
-          }
-
-          const bgR = sumR / sampleCount;
-          const bgG = sumG / sampleCount;
-          const bgB = sumB / sampleCount;
-          
-          const tolerance = 48;
-          
-          for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i+1];
-            const b = data[i+2];
-            
-            const dist = Math.sqrt(
-              Math.pow(r - bgR, 2) + 
-              Math.pow(g - bgG, 2) + 
-              Math.pow(b - bgB, 2)
-            );
-            
-            const isWhiteBg = r > 238 && g > 238 && b > 238;
-            
-            if (dist < tolerance || isWhiteBg) {
-              data[i+3] = 0; // Solid transparent background
-            } else if (dist < tolerance + 15) {
-              const feather = (dist - tolerance) / 15;
-              data[i+3] = Math.min(data[i+3], Math.floor(feather * 255));
-            }
-          }
-          
-          ctx.putImageData(imgData, 0, 0);
-          
-          // Create final canvas with light gray backdrop and e-commerce drop shadow
-          const finalCanvas = document.createElement('canvas');
-          finalCanvas.width = canvas.width;
-          finalCanvas.height = canvas.height;
-          const finalCtx = finalCanvas.getContext('2d');
-          if (finalCtx) {
-            const grad = finalCtx.createLinearGradient(0, 0, 0, finalCanvas.height);
-            grad.addColorStop(0, '#f8fafc'); // slate-50
-            grad.addColorStop(1, '#f1f5f9'); // slate-100
-            finalCtx.fillStyle = grad;
-            finalCtx.fillRect(0, 0, finalCanvas.width, finalCanvas.height);
-            
-            finalCtx.shadowColor = 'rgba(15, 23, 42, 0.08)';
-            finalCtx.shadowBlur = 18;
-            finalCtx.shadowOffsetX = 0;
-            finalCtx.shadowOffsetY = 6;
-            
-            finalCtx.drawImage(canvas, 0, 0);
-            
-            const cleanDataUrl = finalCanvas.toDataURL('image/jpeg', 0.9);
-            const fieldCleanName = side === 'front' ? 'imgFrontClean' : 'imgBackClean';
-            
-            const updated = samples.map(s => {
-              if (s.id === editingSample.id) {
-                return { ...s, [fieldCleanName]: cleanDataUrl };
-              }
-              return s;
-            });
-            onSaveDB(updated);
-            setEditingSample(prev => prev ? { ...prev, [fieldCleanName]: cleanDataUrl } : null);
-            setShowOriginal(false); // Switch to clean cutout view automatically
-            setShowEditMenu(false);
-          }
-        }
-        setIsGeneratingBg(false);
-      };
-      img.onerror = () => {
-        setIsGeneratingBg(false);
-        alert('정면 이미지를 로딩하는데 실패했습니다.');
-      };
-    }, 1800);
-  };
-
   // Edit action save handler
   const handleUpdateSample = () => {
     if (!editingSample) return;
@@ -867,7 +1401,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
   // Delete sample
   const handleDeleteSample = (id: number) => {
-    if (window.confirm('정말 해당 의류 샘플 자산을 폐기 대장에서 제외하시겠습니까? (대여 내역 잔존 시 데이터 부정합 에러가 발생할 수 있습니다.)')) {
+    if (window.confirm('정말 해당 의류 샘플 자산을 삭제하시겠습니까?')) {
       const updated = samples.filter(s => s.id !== id);
       onSaveDB(updated);
     }
@@ -879,7 +1413,6 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
       <div className="flex border-b border-slate-200" id="management-subtabs">
         {[
           { id: 'list', label: '전체 상품', icon: FileText, desc: '전체 상품 목록 조회 및 단일 등록' },
-          { id: 'bulk-excel', label: '엑셀 복사/일괄 등록', icon: FileSpreadsheet, desc: 'Excel 데이터 그대로 붙여넣어 일괄등록' },
           { id: 'bulk-images', label: '상품 이미지 일괄등록', icon: ImageIcon, desc: '촬영 이미지 다중 파일매칭 자동 매핑' }
         ].map((tab) => {
           const Icon = tab.icon;
@@ -954,26 +1487,79 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
               </div>
 
               {/* Row 2: Screenshot 1 - Styled Control Chips & View Mode Toggle */}
-              <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 pt-2.5 border-t border-slate-100" id="filter-chips-row">
-                <div className="flex flex-wrap gap-2 items-center">
+              <div className="flex flex-col lg:flex-row lg:justify-between items-stretch lg:items-center gap-x-3 gap-y-2.5 pt-2.5 border-t border-slate-100" id="filter-chips-row">
+                <div className="flex flex-nowrap gap-x-2 items-center overflow-x-auto min-w-0 shrink">
                   
                   {/* Select Trigger chip matching Screenshot 1 [선택하기] */}
                   <button 
                     onClick={() => {
                       setSearchQuery('');
+                      setSelectedCountry('전체');
                       setSelectedBrand('전체');
                       setSelectedCategory('전체');
                       setSelectedStatus('전체');
-                      setSelectedCondition('전체');
+                      setSelectedRegisterer('전체');
+                      setRegDateFrom('');
+                      setRegDateTo('');
+                      setRegDateOpen(false);
                     }}
-                    className="bg-[#1e293b] hover:bg-[#0f172a] text-white text-xs font-bold py-1.5 px-3.5 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                    className="bg-[#1e293b] hover:bg-[#0f172a] text-white text-xs font-bold py-1.5 px-3.5 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
                   >
                     <CheckCircle className="w-3.5 h-3.5 text-white" />
                     <span>필터 초기화</span>
                   </button>
 
+                  {/* Registration date dropdown */}
+                  <div className="relative shrink-0" ref={regDateFilterRef}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (regDateOpen) {
+                          setRegDateOpen(false);
+                          return;
+                        }
+                        if (regDateFilterRef.current) {
+                          const rect = regDateFilterRef.current.getBoundingClientRect();
+                          const popoverWidth = 560;
+                          let left = rect.left;
+                          if (left + popoverWidth > window.innerWidth - 16) {
+                            left = Math.max(16, window.innerWidth - popoverWidth - 16);
+                          }
+                          setRegDatePopoverPos({ top: rect.bottom + 4, left });
+                        }
+                        setRegDateOpen(true);
+                      }}
+                      className={`bg-white hover:bg-slate-50 border pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none transition-colors cursor-pointer whitespace-nowrap ${
+                        regDateOpen ? 'border-violet-500' : 'border-slate-200 focus:border-violet-500'
+                      }`}
+                    >
+                      {regDateFilterLabel}
+                    </button>
+                    <ChevronDown className={`absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none transition-transform ${regDateOpen ? 'rotate-180' : ''}`} />
+                  </div>
+
+                  {regDateOpen && createPortal(
+                    <div
+                      ref={regDatePopoverRef}
+                      className="fixed z-[9999]"
+                      style={{ top: regDatePopoverPos.top, left: regDatePopoverPos.left }}
+                    >
+                      <DateRangeCalendar
+                        initialFrom={regDateFrom}
+                        initialTo={regDateTo}
+                        onConfirm={(from, to) => {
+                          setRegDateFrom(from);
+                          setRegDateTo(to);
+                          setRegDateOpen(false);
+                        }}
+                        onCancel={() => setRegDateOpen(false)}
+                      />
+                    </div>,
+                    document.body
+                  )}
+
                   {/* Brand select as outline chip */}
-                  <div className="relative">
+                  <div className="relative shrink-0">
                     <select
                       value={selectedBrand}
                       onChange={(e) => setSelectedBrand(e.target.value)}
@@ -988,21 +1574,21 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                   </div>
 
                   {/* Country select as outline chip */}
-                  <div className="relative">
+                  <div className="relative shrink-0">
                     <select
                       value={selectedCountry}
                       onChange={(e) => setSelectedCountry(e.target.value)}
                       className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
                     >
                       <option value="전체">국가: 전체</option>
-                      <option value="한국">국가: 한국</option>
-                      <option value="중국">국가: 중국</option>
+                      <option value="한국">한국</option>
+                      <option value="중국">중국</option>
                     </select>
                     <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
                   </div>
 
                   {/* Category select as outline chip */}
-                  <div className="relative">
+                  <div className="relative shrink-0">
                     <select
                       value={selectedCategory}
                       onChange={(e) => setSelectedCategory(e.target.value)}
@@ -1017,7 +1603,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                   </div>
 
                   {/* Status Options select as outline chip */}
-                  <div className="relative">
+                  <div className="relative shrink-0">
                     <select
                       value={selectedStatus}
                       onChange={(e) => setSelectedStatus(e.target.value)}
@@ -1033,41 +1619,55 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                     <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
                   </div>
 
-                  {/* Condition Options select as outline chip aligned with user screen */}
-                  <div className="relative">
+                  {/* Registerer filter select */}
+                  <div className="relative shrink-0">
                     <select
-                      value={selectedCondition}
-                      onChange={(e) => setSelectedCondition(e.target.value)}
+                      value={selectedRegisterer}
+                      onChange={(e) => setSelectedRegisterer(e.target.value)}
                       className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
                     >
-                      <option value="전체">컨디션: 전체</option>
-                      <option value="아주 좋음">아주 좋음</option>
-                      <option value="좋음">좋음</option>
-                      <option value="양호함">양호함</option>
-                      <option value="약간의 얼룩/손상 있음">약간의 얼룩/손상 있음</option>
-                      <option value="얼룩/손상 있음">얼룩/손상 있음</option>
+                      <option value="전체">등록자: 전체</option>
+                      {uniqueRegisterers.filter(r => r !== '전체').map(r => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
                     </select>
                     <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
                   </div>
 
-                  {/* Decorative error checkbox mirroring Screenshot 1 [등록 오류] checkbox style */}
-                  <label className="flex items-center gap-1.5 bg-white border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-bold text-slate-650 hover:bg-slate-50 cursor-pointer select-none transition-all">
-                    <input 
-                      type="checkbox" 
-                      checked={selectedStatus === '연체중'} 
-                      onChange={(e) => setSelectedStatus(e.target.checked ? '연체중' : '전체')}
-                      className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer" 
-                    />
-                    <span>미납 연체건만</span>
-                  </label>
                 </div>
 
                 {/* Counter & Layout mode selector right-aligned like Screenshot 1 */}
-                <div className="flex items-center gap-2.5 sm:self-center shrink-0 self-end justify-between w-full sm:w-auto">
-                  <span className="text-[11px] text-slate-400 font-extrabold font-mono uppercase tracking-wide">
-                    이미지 {filteredSamples.length}
+                <div className="flex flex-wrap items-center gap-2.5 lg:self-center shrink-0 self-end justify-end w-full lg:w-auto">
+                  <span className="text-[11px] text-slate-400 font-extrabold font-mono uppercase tracking-wide whitespace-nowrap">
+                    상품 수: {filteredSamples.length.toLocaleString()}개
                   </span>
-                  
+
+                  {/* 엑셀 다운로드 */}
+                  <button
+                    type="button"
+                    onClick={handleExcelDownload}
+                    className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white py-1.5 px-3 rounded-lg text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shadow-3xs"
+                    title={selectedIds.size > 0 ? `선택한 ${selectedIds.size}개 엑셀 다운로드` : '검색 결과 전체 엑셀 다운로드'}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    엑셀 다운로드{selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}
+                  </button>
+
+                  {/* 페이지당 개수 선택 */}
+                  <div className="relative">
+                    <select
+                      value={pageSize}
+                      onChange={(e) => setPageSize(Number(e.target.value))}
+                      className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3 pr-7 py-1.5 text-[11px] font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
+                      title="페이지당 표시 개수"
+                    >
+                      {[10, 20, 50, 100].map((n) => (
+                        <option key={n} value={n}>{n}개씩</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-2 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
+                  </div>
+
                   <div className="flex border border-slate-200/85 rounded-lg p-0.5 bg-slate-50 gap-0.5" id="view-mode-toggle-group">
                     <button
                       type="button"
@@ -1107,105 +1707,138 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
               return viewMode === 'table' ? (
                 /* Main apparel table list */
+                <div className="space-y-4" id="samples-table-wrap">
                 <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden" id="samples-datagrid-card">
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse" id="samples-main-table">
                       <thead>
-                        <tr className="bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider font-sans">
-                          <th className="py-3 px-4 text-center min-w-[65px] whitespace-nowrap">번호</th>
-                          <th className="py-3 px-4 whitespace-nowrap">상품코드</th>
-                          <th className="py-3 px-4 whitespace-nowrap">상품 이미지 (앞/뒤)</th>
-                          <th className="py-3 px-4 whitespace-nowrap">상품명</th>
-                          <th className="py-3 px-4 whitespace-nowrap">구분(카테고리)</th>
-                          <th className="py-3 px-4 whitespace-nowrap">브랜드</th>
-                          <th className="py-3 px-4 text-right whitespace-nowrap">대여료</th>
-                          <th className="py-3 px-4 whitespace-nowrap">등록일</th>
-                          <th className="py-3 px-4 text-center whitespace-nowrap">상태</th>
-                          <th className="py-3 px-4 text-center whitespace-nowrap">동작</th>
+                        <tr className="bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider font-sans text-left">
+                          <th className="py-3 px-3 text-center w-10">
+                            <input
+                              type="checkbox"
+                              checked={allFilteredSelected}
+                              onChange={toggleSelectAll}
+                              className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                              title="전체 선택"
+                            />
+                          </th>
+                          <th className="py-3 pl-2.5 pr-1 text-left w-8 whitespace-nowrap">번호</th>
+                          <th className="py-3 pl-1 pr-2.5 text-left whitespace-nowrap">상품코드</th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">상품 이미지</th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">상품명</th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">카테고리</th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">브랜드</th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">특화 브랜드</th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">위치번호</th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">
+                            <button
+                              onClick={toggleSortByDate}
+                              className="inline-flex items-center gap-1 hover:text-slate-700 cursor-pointer"
+                              title="등록일 정렬"
+                            >
+                              등록일
+                              <ChevronDown
+                                className={`w-3 h-3 transition-transform ${sortDir === 'asc' ? 'rotate-180' : ''} ${sortDir ? 'text-violet-600' : 'text-slate-400'}`}
+                              />
+                            </button>
+                          </th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">등록자</th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">상태</th>
+                          <th className="py-3 px-2.5 text-left whitespace-nowrap">동작</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
                         {filteredSamples.length === 0 ? (
                           <tr>
-                            <td colSpan={10} className="py-20 text-center text-slate-400">
+                            <td colSpan={13} className="py-20 text-center text-slate-400">
                               검색 필터와 일치하는 의류 샘플 데이터가 존재하지 않습니다.
                             </td>
                           </tr>
                         ) : (
-                          filteredSamples.map((sample, index) => {
+                          pagedSamples.map((sample) => {
                             return (
-                              <tr key={sample.id} className="hover:bg-slate-50/70 transition-colors" id={`tbl-row-${sample.id}`}>
-                                <td className="py-3.5 px-4 text-center font-mono text-slate-400 text-[11px]">{sample.id}</td>
+                              <tr key={sample.id} className={`hover:bg-slate-50/70 transition-colors ${selectedIds.has(sample.id) ? 'bg-violet-50/40' : ''}`} id={`tbl-row-${sample.id}`}>
+                                <td className="py-3.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedIds.has(sample.id)}
+                                    onChange={() => toggleSelect(sample.id)}
+                                    className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                                  />
+                                </td>
+                                <td className="py-3.5 pl-2.5 pr-1 text-left font-mono text-slate-400 text-[11px]">{sample.id}</td>
                                 <td 
-                                  className="py-3.5 px-4 font-mono font-bold text-indigo-650 hover:text-indigo-850 hover:underline cursor-pointer"
+                                  className="py-3.5 pl-1 pr-2.5 text-left font-mono font-bold text-indigo-650 hover:text-indigo-850 hover:underline cursor-pointer"
                                   onClick={() => setEditingSample(sample)}
                                   title="상세 편집"
                                 >
                                   {sample.code}
                                 </td>
-                                <td className="py-3.5 px-4" onClick={(e) => e.stopPropagation()}>
-                                  <div className="flex gap-1.5" id={`img-preview-group-${sample.id}`}>
-                                    {/* Front Image Slot */}
-                                    <div className="relative group/img w-10 h-10 rounded border border-slate-150 bg-slate-50 overflow-hidden flex items-center justify-center">
-                                      {sample.imgFront ? (
-                                        <img src={sample.imgFront} referrerPolicy="no-referrer" alt="Front" className="w-full h-full object-cover" />
-                                      ) : (
-                                        <span className="text-[9px] text-slate-400 font-mono scale-90">FRONT</span>
-                                      )}
-                                      <label className="absolute inset-0 bg-slate-900/60 flex items-center justify-center opacity-0 group-hover/img:opacity-100 cursor-pointer transition-opacity">
-                                        <Upload className="w-3.5 h-3.5 text-white" />
-                                        <input 
-                                          type="file" 
-                                          accept="image/*" 
-                                          className="hidden" 
-                                          onChange={(e) => handleSingleImageUpload(sample.id, 'front', e)}
-                                        />
-                                      </label>
-                                    </div>
-                                    {/* Back Image Slot */}
-                                    <div className="relative group/img w-10 h-10 rounded border border-slate-150 bg-slate-50 overflow-hidden flex items-center justify-center">
-                                      {sample.imgBack ? (
-                                        <img src={sample.imgBack} referrerPolicy="no-referrer" alt="Back" className="w-full h-full object-cover" />
-                                      ) : (
-                                        <span className="text-[9px] text-slate-400 font-mono scale-90">BACK</span>
-                                      )}
-                                      <label className="absolute inset-0 bg-slate-900/60 flex items-center justify-center opacity-0 group-hover/img:opacity-100 cursor-pointer transition-opacity">
-                                        <Upload className="w-3.5 h-3.5 text-white" />
-                                        <input 
-                                          type="file" 
-                                          accept="image/*" 
-                                          className="hidden" 
-                                          onChange={(e) => handleSingleImageUpload(sample.id, 'back', e)}
-                                        />
-                                      </label>
-                                    </div>
-                                  </div>
+                                <td className="py-3.5 px-2.5 text-left" onClick={(e) => e.stopPropagation()}>
+                                  {(() => {
+                                    const showBack = !!imageFlips[sample.id];
+                                    const side: 'front' | 'back' = showBack ? 'back' : 'front';
+                                    const currentImg = showBack ? sample.imgBack : sample.imgFront;
+                                    return (
+                                      <div
+                                        className="relative group/img w-16 h-20 rounded-md bg-slate-50 overflow-hidden inline-flex items-center justify-center cursor-pointer border-0 outline-none focus:outline-none ring-0"
+                                        onClick={() => toggleImageFlip(sample.id)}
+                                        title="클릭하면 앞/뒤 전환"
+                                        id={`img-flip-${sample.id}`}
+                                      >
+                                        {currentImg ? (
+                                          <img src={currentImg} referrerPolicy="no-referrer" alt={showBack ? 'Back' : 'Front'} className="w-full h-full object-cover" />
+                                        ) : (
+                                          <ImageIcon className="w-5 h-5 text-slate-300" />
+                                        )}
+                                        {/* 앞/뒤 전환 아이콘 배지 */}
+                                        {(sample.imgFront || sample.imgBack) && (
+                                          <span className="absolute top-1 left-1 p-0.5 bg-slate-900/60 rounded" title="앞/뒤 전환">
+                                            <RefreshCw className="w-3 h-3 text-white" />
+                                          </span>
+                                        )}
+                                        {/* 업로드 (현재 보이는 면) */}
+                                        <label
+                                          className="absolute bottom-1 right-1 p-0.5 bg-slate-900/70 hover:bg-slate-900 rounded cursor-pointer opacity-0 group-hover/img:opacity-100 transition-opacity"
+                                          onClick={(e) => e.stopPropagation()}
+                                          title={`${showBack ? '뒷면' : '앞면'} 이미지 업로드`}
+                                        >
+                                          <Upload className="w-3 h-3 text-white" />
+                                          <input
+                                            type="file"
+                                            accept="image/*"
+                                            className="hidden"
+                                            onChange={(e) => handleSingleImageUpload(sample.id, side, e)}
+                                          />
+                                        </label>
+                                      </div>
+                                    );
+                                  })()}
                                 </td>
                                 <td 
-                                  className="py-3.5 px-4 cursor-pointer group/row" 
+                                  className="py-3.5 px-2.5 text-left cursor-pointer group/row" 
                                   onClick={() => setEditingSample(sample)}
                                   title="상세 편집"
                                 >
-                                  <div className="font-semibold text-slate-800 group-hover/row:text-indigo-650 transition-colors">{sample.name || '-'}</div>
-                                  <div className="text-[10px] text-slate-400 font-sans mt-0.5">등록자: {sample.registerer}</div>
+                                  <div className="font-semibold text-slate-800 group-hover/row:text-indigo-650 transition-colors whitespace-nowrap">{sample.name || '-'}</div>
                                 </td>
-                                <td className="py-3.5 px-4">
+                                <td className="py-3.5 px-2.5 text-left">
                                   <span className="text-xs text-slate-600 bg-slate-100 py-0.5 px-2 rounded-md font-medium">
                                     {sample.category}
                                   </span>
                                 </td>
-                                <td className="py-3.5 px-4 font-semibold text-slate-700">{sample.brand}</td>
-                                <td className="py-3.5 px-4 font-mono font-bold text-emerald-600 text-right">
-                                  {(sample.rentalFee ?? 15000).toLocaleString()}원
-                                </td>
-                                <td className="py-3.5 px-4 font-mono text-slate-400 text-[11px]">{sample.regDate}</td>
-                                <td className="py-3.5 px-4 text-center">
+                                <td className="py-3.5 px-2.5 text-left font-semibold text-slate-700 whitespace-nowrap">{sample.brand}</td>
+                                <td className="py-3.5 px-2.5 text-left font-semibold text-slate-700 whitespace-nowrap">{sample.specialBrand || '-'}</td>
+                                <td className="py-3.5 px-2.5 font-mono text-slate-600 text-[11px] text-left">{sample.locationNo || '-'}</td>
+                                <td className="py-3.5 px-2.5 text-left font-mono text-slate-400 text-[11px] whitespace-nowrap">{sample.regDate}</td>
+                                <td className="py-3.5 px-2.5 text-left text-slate-600 text-[11px] whitespace-nowrap">{sample.registerer || '-'}</td>
+                                <td className="py-3.5 px-2.5 text-left">
                                   <span className={`text-[11px] font-bold py-1 px-2.5 rounded-full border ${getStatusBadgeStyle(sample.status)}`}>
                                     {sample.status}
                                   </span>
                                 </td>
-                                <td className="py-3.5 px-4 text-center">
-                                  <div className="flex justify-center items-center gap-1.5" id={`action-cell-${sample.id}`} onClick={(e) => e.stopPropagation()}>
+                                <td className="py-3.5 px-2.5 text-left">
+                                  <div className="flex justify-start items-center gap-1.5" id={`action-cell-${sample.id}`} onClick={(e) => e.stopPropagation()}>
                                     <button
                                       onClick={() => setEditingSample(sample)}
                                       className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
@@ -1230,6 +1863,49 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                     </table>
                   </div>
                 </div>
+
+                {/* 페이지네이션 */}
+                {filteredSamples.length > 0 && (
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-1" id="samples-pagination">
+                    <span className="text-[11px] text-slate-400 font-medium font-mono">
+                      {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, filteredSamples.length)} / 총 {filteredSamples.length}개
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setCurrentPage(1)}
+                        disabled={safePage === 1}
+                        className="px-2 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        « 처음
+                      </button>
+                      <button
+                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                        disabled={safePage === 1}
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        이전
+                      </button>
+                      <span className="px-2 text-xs font-bold text-slate-700 font-mono">
+                        {safePage} / {totalPages}
+                      </span>
+                      <button
+                        onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                        disabled={safePage === totalPages}
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        다음
+                      </button>
+                      <button
+                        onClick={() => setCurrentPage(totalPages)}
+                        disabled={safePage === totalPages}
+                        className="px-2 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        끝 »
+                      </button>
+                    </div>
+                  </div>
+                )}
+                </div>
               ) : (
                 /* Premium Grid Layout Mode showing gorgeous cards */
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5" id="samples-image-grid">
@@ -1238,10 +1914,12 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                       검색 필터와 일치하는 의류 샘플 데이터가 존재하지 않습니다.
                     </div>
                   ) : (
-                    filteredSamples.map((sample) => (
+                    pagedSamples.map((sample) => (
                       <div
                         key={sample.id}
-                        className="group bg-white rounded-xl border border-slate-200/70 overflow-hidden transition-all duration-200 flex flex-col justify-between hover:border-slate-350 hover:shadow-sm shadow-3xs hover:-translate-y-0.5 cursor-pointer"
+                        className={`group bg-white rounded-xl border overflow-hidden transition-all duration-200 flex flex-col justify-between hover:shadow-sm shadow-3xs hover:-translate-y-0.5 cursor-pointer ${
+                          selectedIds.has(sample.id) ? 'border-violet-400 ring-2 ring-violet-200' : 'border-slate-200/70 hover:border-slate-350'
+                        }`}
                         id={`grid-card-${sample.id}`}
                         onClick={() => setEditingSample(sample)}
                       >
@@ -1281,6 +1959,20 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                               {sample.status}
                             </span>
                           </div>
+
+                          {/* 선택 체크박스 (엑셀 다운로드용) */}
+                          <label
+                            className="absolute top-2.5 right-2.5 z-20 flex items-center justify-center cursor-pointer"
+                            onClick={(e) => e.stopPropagation()}
+                            title="선택"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.has(sample.id)}
+                              onChange={() => toggleSelect(sample.id)}
+                              className="w-4 h-4 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer shadow-sm"
+                            />
+                          </label>
 
                           {/* Image Save and Share trigger buttons */}
                           <div className="absolute bottom-2.5 right-2.5 flex gap-1.5 opacity-0 group-hover/img:opacity-100 transition-opacity duration-150 z-10" onClick={(e) => e.stopPropagation()}>
@@ -1349,145 +2041,6 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
         )}
 
         {/* Excel style Copy Paste bulk tab */}
-        {activeTab === 'bulk-excel' && (
-          <motion.div
-            key="bulk-excel-tab"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="space-y-6"
-            id="bulk-excel-root"
-          >
-            <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-xs space-y-4" id="excel-instructions">
-              <h3 className="text-sm font-semibold text-slate-800">엑셀 시트 텍스트 복사 및 붙여넣기 (일괄 업로드)</h3>
-              <p className="text-xs text-slate-500 leading-relaxed font-sans">
-                오른쪽 텍스트 입력창 영역에 <b>Excel 시트의 행 영역을 그대로 긁어서(Ctrl+C) 복사 붙여넣기(Ctrl+V)</b> 하십시오. 각 열은 <b>탭 문자</b> 또는 쉼표 기호로 구분되어야 합니다.<br />
-                <b>예제 양식 데이터 순서 추천:</b> <code className="font-mono bg-slate-100 text-indigo-700 py-0.5 px-2 rounded-md">상품코드 | 상품명 | 상태 | 브랜드 | 카테고리</code>
-              </p>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-1" id="excel-interactive-editor">
-                <div className="space-y-2">
-                  <span className="text-xs font-bold text-slate-700">1. 아래 텍스트박스에 데이터 복사 붙여넣기</span>
-                  <textarea
-                    rows={8}
-                    className="w-full p-3 font-mono text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder:text-slate-400/80 leading-relaxed"
-                    placeholder={`PCCAI032975\t25SS 캐주얼 후드 보이스 트랙수트\t대여가능\t중국포인포\t유형화샘플\nPCCAI032974\t25FW 아동 패딩 베스트 웰론\t대여가능\t중국포인포\t오리지널`}
-                    value={bulkTextInput}
-                    onChange={(e) => setBulkTextInput(e.target.value)}
-                  />
-                  <div className="flex gap-2 justify-end">
-                    <button
-                      onClick={() => setBulkTextInput('')}
-                      className="text-xs font-semibold text-slate-500 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
-                    >
-                      비우기
-                    </button>
-                    <button
-                      onClick={handleParseExcelText}
-                      className="text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 px-4 py-1.5 rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
-                      id="btn-parse-excel"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      구조화 분석하기
-                    </button>
-                  </div>
-                </div>
-
-                <div className="bg-slate-50/50 p-4 rounded-xl border border-dashed border-slate-200 flex flex-col justify-between" id="excel-pre-template">
-                  <div className="space-y-3">
-                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                      <FileText className="w-4 h-4 text-slate-500" />
-                      엑셀 모의 템플릿 로컬 기재해 직접 테스트하기
-                    </span>
-                    <p className="text-[11px] text-slate-400 font-sans leading-relaxed">
-                      별빛 아우터와 겨울 시즌 아동복을 대량 등록하기 편하도록 세팅하였습니다. "템플릿 예시 삽입" 버튼을 클릭해 텍스트창을 채운 뒤 실시간으로 수량을 체크하고 일괄 등록하십시오.
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setBulkTextInput(
-                        `PCCAI032979\t26SS 기모 세일러 세트 원앤원\t대여가능\t중국포인포\t유형화샘플\n` +
-                        `PCCAI032978\t윈터 슬림 슬러시 롱 아우터\t부평보관\t중국포인포\t오리지널\n` +
-                        `PCCAI032977\t에센셜 스트라이프 아우터 패션 자켓\t대여가능\t중국포인포\t자사샘플\n` +
-                        `PCCAI032976\t에어 서쿨레이터 여름 반팔 아동복\t대여가능\t중국포인포\t중국샘플`
-                      );
-                    }}
-                    className="w-full text-indigo-600 bg-indigo-50 hover:bg-indigo-100 text-xs font-bold py-2 rounded-lg transition-colors shadow-2xs"
-                  >
-                    템플릿 예시 텍스트 삽입하기
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {bulkError && (
-              <div className="p-3 bg-rose-50 text-rose-700 text-xs rounded-lg border border-rose-100 flex items-center gap-2">
-                <AlertCircle className="w-4.5 h-4.5 shrink-0" />
-                <span>{bulkError}</span>
-              </div>
-            )}
-
-            {parsedBulkRows.length > 0 && (
-              <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-xs space-y-4" id="excel-parse-preview">
-                <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="w-5 h-5 text-emerald-500 animate-bounce" />
-                    <h4 className="text-sm font-semibold text-slate-800">일괄 분석 완료 내역 ({parsedBulkRows.length}건)</h4>
-                  </div>
-                  <button
-                    onClick={handleSaveBulkExcel}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2 px-5 rounded-lg flex items-center gap-1 shadow-sm shrink-0"
-                    id="btn-save-bulk-excel"
-                  >
-                    일합 대장 저장 및 일괄 등록
-                  </button>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse font-sans" id="parsed-preview-table">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-100 font-bold text-slate-400">
-                        <th className="py-2.5 px-3">중복여부</th>
-                        <th className="py-2.5 px-3">샘플코드</th>
-                        <th className="py-2.5 px-3">샘플명</th>
-                        <th className="py-2.5 px-3">브랜드</th>
-                        <th className="py-2.5 px-3">위치번호</th>
-                        <th className="py-2.5 px-3">카테고리</th>
-                        <th className="py-2.5 px-3">등록자</th>
-                        <th className="py-2.5 px-3">상태</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {parsedBulkRows.map((row, i) => (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="py-2.5 px-3 font-semibold">
-                            {row.isDuplicate ? (
-                              <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-100 py-0.5 px-1.5 rounded">중복 (갱신용)</span>
-                            ) : (
-                              <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 py-0.5 px-1.5 rounded">신규 자산</span>
-                            )}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono font-bold text-indigo-900">{row.code}</td>
-                          <td className="py-2.5 px-3">{row.name}</td>
-                          <td className="py-2.5 px-3 font-medium">{row.brand}</td>
-                          <td className="py-2.5 px-3 font-mono text-slate-400">{row.locationNo}</td>
-                          <td className="py-2.5 px-3 text-slate-500">{row.category}</td>
-                          <td className="py-2.5 px-3 text-slate-500">{row.registerer}</td>
-                          <td className="py-2.5 px-3">
-                            <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-bold">
-                              {row.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </motion.div>
-        )}
-
         {/* Bulk image front back drag drop map tab */}
         {activeTab === 'bulk-images' && (
           <motion.div
@@ -1510,7 +2063,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                 }`}
               >
                 <ImageIcon className="w-3.5 h-3.5" />
-                <span>기존 의류 사진 일괄 매핑</span>
+                <span>기존 샘플 이미지 일괄 교체</span>
               </button>
               <button
                 type="button"
@@ -1522,7 +2075,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                 }`}
               >
                 <Sparkles className="w-3.5 h-3.5 text-indigo-600 animate-pulse" />
-                <span>신규 의류 AI 일괄 등록</span>
+                <span>신규 샘플 이미지 일괄 등록</span>
               </button>
             </div>
 
@@ -1530,10 +2083,10 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
             {bulkImagesMode === 'mapping' && (
               <div className="space-y-6" id="bulk-images-mapping-block">
                 <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-xs space-y-4" id="images-instructions">
-                  <h3 className="text-sm font-semibold text-slate-800">의류 상품 이미지 일괄 스마트 드롭 매칭</h3>
+                  <h3 className="text-sm font-semibold text-slate-800">기존 샘플 이미지 일괄 교체</h3>
                   <p className="text-xs text-slate-500 leading-relaxed font-sans">
-                    다수의 의류 정면 및 배면(전면/후면) 촬영 파일들을 마우스로 드래그 앤 드롭 영역에 모조리 끌어다 놓으십시오.<br />
-                    <b>파일명 매핑 룰:</b> 시스템은 파일 이름에 포함된 상품코드 기입어(예: <code className="bg-slate-100 text-indigo-700 py-0.5 px-1 font-mono rounded">PCCAI032991</code>)를 판별하여 대장에 매칭하고, 파일명 뒷자리에 <code className="bg-slate-100 font-mono text-slate-700 py-0.5 px-1 rounded">back</code>, <code className="bg-slate-100 font-mono text-slate-700 py-0.5 px-1 rounded">뒤</code>, <code className="bg-slate-100 font-mono text-slate-705 py-0.5 px-1 rounded">_01</code>, <code className="bg-slate-100 font-mono text-slate-700 py-0.5 px-1 rounded">_rear</code> 등이 포함되면 <b>후면(배면) 이미지</b>로 구분하여 매핑합니다.
+                    교체할 의류 정면 및 배면(전면/후면) 촬영 파일들을 마우스로 드래그 앤 드롭 영역에 모조리 끌어다 놓으십시오.<br />
+                    <b>파일명 매칭 룰:</b> 시스템은 파일 이름에 포함된 상품코드(예: <code className="bg-slate-100 text-indigo-700 py-0.5 px-1 font-mono rounded">PCCAI032991</code>)를 판별하여 <b>기존에 저장된 해당 상품의 이미지를 새 파일로 교체</b>하고, 파일명 뒷자리에 <code className="bg-slate-100 font-mono text-slate-700 py-0.5 px-1 rounded">b1</code> 등이 포함되면 <b>후면(배면) 이미지</b>로 구분하여 교체합니다.
                   </p>
 
                   {/* Drag drop zone */}
@@ -1554,7 +2107,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                       <Upload className="w-8 h-8 text-indigo-600 animate-pulse" />
                     </div>
                     <div className="text-center space-y-1">
-                      <p className="text-xs font-bold text-slate-700">전체 옷 촬영 사진파일을 여기에 끌어다 대기열에 놓으세요</p>
+                      <p className="text-xs font-bold text-slate-700">전체 의류 샘플 촬영 사진 파일을 여기에 끌어다 대기열에 놓으세요</p>
                       <p className="text-[10px] text-slate-400">또는 마우스로 클릭해 직접 기기에서 선택하십시오 (다중 지원)</p>
                     </div>
                     <input
@@ -1576,6 +2129,24 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                         <h4 className="text-sm font-semibold text-slate-800">업로드 완료 대기열 및 매칭현황 ({uploadedPreviewFiles.length}장)</h4>
                       </div>
                       <div className="flex gap-2">
+                        {/* 카드 / 표 보기 전환 */}
+                        <button
+                          type="button"
+                          onClick={() => setBulkImagesViewMode(bulkImagesViewMode === 'card' ? 'table' : 'card')}
+                          className="text-xs font-bold text-indigo-750 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 py-2 px-4 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
+                        >
+                          {bulkImagesViewMode === 'card' ? (
+                            <>
+                              <List className="w-4 h-4 text-indigo-650" />
+                              <span>표 스타일로 전환</span>
+                            </>
+                          ) : (
+                            <>
+                              <LayoutGrid className="w-4 h-4 text-indigo-650" />
+                              <span>카드 스타일로 전환</span>
+                            </>
+                          )}
+                        </button>
                         <button
                           onClick={() => setUploadedPreviewFiles([])}
                           className="text-xs font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 py-2 px-4 rounded-lg transition-colors cursor-pointer"
@@ -1587,11 +2158,12 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                           className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 px-5 rounded-lg flex items-center gap-1 shadow-sm shrink-0"
                           id="btn-save-bulk-images"
                         >
-                          의류 대장 이미지 일괄 등록 완료
+                          기존 샘플 이미지 일괄 교체
                         </button>
                       </div>
                     </div>
 
+                    {bulkImagesViewMode === 'card' ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4" id="images-preview-grid">
                       {uploadedPreviewFiles.map((pf) => (
                         <div
@@ -1606,7 +2178,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                             <X className="w-3.5 h-3.5" />
                           </button>
 
-                          <div className="w-full h-32 rounded-lg bg-white overflow-hidden border border-slate-100 flex items-center justify-center">
+                          <div className="w-full h-32 rounded-lg bg-white overflow-hidden border-0 ring-0 flex items-center justify-center">
                             <img src={pf.base64} alt={pf.filename} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                           </div>
 
@@ -1637,19 +2209,13 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
                             <div className="flex flex-col gap-1">
                               <span className="text-[10px] font-bold text-slate-500">매칭 의류 지정:</span>
-                              <select
-                                value={pf.matchedCode || ''}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setUploadedPreviewFiles(prev => prev.map(x => x.id === pf.id ? { ...x, matchedCode: val || null, assigned: !!val } : x));
+                              <SampleMatchCombobox
+                                samples={samples}
+                                value={pf.matchedCode || null}
+                                onChange={(code) => {
+                                  setUploadedPreviewFiles(prev => prev.map(x => x.id === pf.id ? { ...x, matchedCode: code, assigned: !!code } : x));
                                 }}
-                                className="bg-white border border-slate-250 p-1.5 rounded text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-                              >
-                                <option value="">-- 미지정 (수동선택) --</option>
-                                {samples.map(s => (
-                                  <option key={s.id} value={s.code}>[{s.code}] {s.name}</option>
-                                ))}
-                              </select>
+                              />
                             </div>
 
                             {pf.assigned ? (
@@ -1667,6 +2233,80 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                         </div>
                       ))}
                     </div>
+                    ) : (
+                    /* 표 스타일 보기 */
+                    <div className="border border-slate-200 rounded-xl overflow-x-auto" id="images-preview-table">
+                      <table className="w-full text-left border-collapse min-w-[820px]">
+                        <thead>
+                          <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                            <th className="py-3 px-4 w-20 text-left">이미지</th>
+                            <th className="py-3 px-4 text-left">파일명</th>
+                            <th className="py-3 px-4 w-40 text-left">앞/뒤 판정</th>
+                            <th className="py-3 px-4 w-72 text-left">매칭 의류 지정</th>
+                            <th className="py-3 px-4 w-28 text-left">상태</th>
+                            <th className="py-3 px-4 w-14 text-center">제거</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
+                          {uploadedPreviewFiles.map((pf) => (
+                            <tr key={pf.id} className="hover:bg-slate-50/70 transition-colors">
+                              <td className="py-2.5 px-4">
+                                <div className="w-12 h-14 rounded-md bg-white overflow-hidden border-0 ring-0 inline-flex items-center justify-center">
+                                  <img src={pf.base64} alt={pf.filename} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-4 font-mono text-[11px] text-slate-500 max-w-[220px] truncate" title={pf.filename}>{pf.filename}</td>
+                              <td className="py-2.5 px-4">
+                                <div className="flex gap-1">
+                                  <button
+                                    onClick={() => setUploadedPreviewFiles(prev => prev.map(x => x.id === pf.id ? { ...x, isBack: false } : x))}
+                                    className={`text-[9px] font-bold py-0.5 px-2 rounded-md ${!pf.isBack ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'}`}
+                                  >
+                                    정면 (전)
+                                  </button>
+                                  <button
+                                    onClick={() => setUploadedPreviewFiles(prev => prev.map(x => x.id === pf.id ? { ...x, isBack: true } : x))}
+                                    className={`text-[9px] font-bold py-0.5 px-2 rounded-md ${pf.isBack ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'}`}
+                                  >
+                                    배면 (후)
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-4">
+                                <SampleMatchCombobox
+                                  samples={samples}
+                                  value={pf.matchedCode || null}
+                                  onChange={(code) => {
+                                    setUploadedPreviewFiles(prev => prev.map(x => x.id === pf.id ? { ...x, matchedCode: code, assigned: !!code } : x));
+                                  }}
+                                />
+                              </td>
+                              <td className="py-2.5 px-4">
+                                {pf.assigned ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />지정됨
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-500">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />미지정
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-4 text-center">
+                                <button
+                                  onClick={() => setUploadedPreviewFiles(prev => prev.filter(x => x.id !== pf.id))}
+                                  className="p-1 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-md transition-colors"
+                                  title="제거"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1675,58 +2315,161 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
             {/* Mode B: AI Assisted Bulk Clothes Creator */}
             {bulkImagesMode === 'ai-new' && (
               <div className="space-y-6" id="bulk-images-ai-new-block">
-                <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-xs space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-5 h-5 text-indigo-600" />
-                    <h3 className="text-sm font-semibold text-slate-800">신규 의류 AI 원클릭 일괄 스마트 등록</h3>
-                  </div>
-                  <p className="text-xs text-slate-500 leading-relaxed font-sans">
-                    등록하려는 의류의 촬영 사진들을 업로드 영역에 놓아보세요. <br />
-                    <b>Gemini AI 모델</b>이 의류 사진의 전체 윤곽, 브랜드 로고타입, 원단 혼용 재질 및 디자인 큐를 실시간 분석하여 <b>상품명, 브랜드, 대여료, 소재, 사이즈, 색상, 성별추천, 카테고리</b> 등을 자동으로 미리 기입해 드립니다!
-                  </p>
+                {/* 좌: 상품 정보 불러오기 / 우: 신규 샘플 이미지 일괄 등록 */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6" id="meta-import-panel">
+                  {/* 좌측: 구글 스프레드시트 정보 불러오기 */}
+                  <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-xs space-y-4 flex flex-col">
+                    <div className="flex items-center gap-2">
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                      <h3 className="text-sm font-semibold text-slate-800">상품 정보 불러오기</h3>
+                    </div>
+                    <p className="text-xs text-slate-500 leading-relaxed font-sans">
+                      <b>샘플코드, 샘플명, 위치번호, 칼라설명, 성별, 국가, 가격, 특화샘플, 소재</b> 등은 AI가 임의로 생성하지 않고 <b>구글 스프레드시트에서 그대로 불러옵니다.</b> 이미지의 <b>파일명에 포함된 샘플코드</b>로 각 행이 자동 매칭됩니다.
+                    </p>
 
-                  {/* Drag drop zone for Mode B */}
-                  <div
-                    className={`p-10 border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors ${
-                      dragActive 
-                        ? 'border-indigo-500 bg-indigo-50/50' 
-                        : 'border-slate-200 bg-slate-50/50 hover:bg-slate-50'
-                    }`}
-                    onDragEnter={handleDrag}
-                    onDragOver={handleDrag}
-                    onDragLeave={handleDrag}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setDragActive(false);
-                      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                        processAiUploadedFiles(e.dataTransfer.files);
-                      }
-                    }}
-                    onClick={() => aiFileInputRef.current?.click()}
-                    id="drag-ai-images-dropzone"
-                  >
-                    <div className="p-4 bg-white rounded-full shadow-xs border border-slate-100 text-slate-400">
-                      <Sparkles className="w-8 h-8 text-indigo-600 animate-bounce" />
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={sheetId}
+                        onChange={(e) => setSheetId(e.target.value)}
+                        placeholder="시트 URL 붙여넣기 (비워두면 기본 시트 사용)"
+                        className="flex-1 bg-slate-50 border border-slate-200 py-2 px-3 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white font-sans"
+                      />
+                      <button
+                        onClick={handleImportFromSheets}
+                        disabled={importLoading}
+                        className="text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${importLoading ? 'animate-spin' : ''}`} />
+                        정보 불러오기
+                      </button>
                     </div>
-                    <div className="text-center space-y-1">
-                      <p className="text-xs font-bold text-slate-700">신규 의류 촬영 사진들을 복수로 여기에 가져다 놓으십시오</p>
-                      <p className="text-[10px] text-slate-400">또는 클릭하여 기기 사진첩에서 바로 일괄 업로드 (Gemini 가공 지원)</p>
+
+                    <p className="text-[11px] text-slate-400 leading-relaxed font-mono mt-auto">
+                      컬럼 순서: 중복여부 | 샘플코드 | 샘플명 | 위치번호 | 칼라설명 | 성별코드 | 국가 | 가격 | 샘플설명 | 브랜드코드 | 위치 | 연도 | 달 | 시즌 | 아이템코드 | 특화샘플 | 소재
+                    </p>
+                  </div>
+
+                  {/* 우측: 신규 샘플 이미지 일괄 등록 (업로드) */}
+                  <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-xs space-y-4 flex flex-col">
+                    <div className="flex items-center gap-2">
+                      <ImageIcon className="w-4 h-4 text-indigo-600" />
+                      <h3 className="text-sm font-semibold text-slate-800">신규 샘플 이미지 일괄 등록</h3>
                     </div>
-                    <input
-                      ref={aiFileInputRef}
-                      type="file"
-                      multiple
-                      accept="image/*"
-                      onChange={(e) => {
-                        if (e.target.files && e.target.files[0]) {
-                          processAiUploadedFiles(e.target.files);
+                    <p className="text-xs text-slate-500 leading-relaxed font-sans">
+                      촬영 사진들을 업로드하면 <b>Gemini AI</b>가 <b>컨디션</b>과 (시트에 값이 없는 경우) <b>색상·의류 계열·소재</b>를 보조로 채웁니다. 시트에서 불러온 값이 있으면 시트 값이 우선합니다.
+                    </p>
+
+                    {/* Drag drop zone for Mode B */}
+                    <div
+                      className={`flex-1 min-h-[180px] p-8 border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors ${
+                        dragActive 
+                          ? 'border-indigo-500 bg-indigo-50/50' 
+                          : 'border-slate-200 bg-slate-50/50 hover:bg-slate-50'
+                      }`}
+                      onDragEnter={handleDrag}
+                      onDragOver={handleDrag}
+                      onDragLeave={handleDrag}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setDragActive(false);
+                        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                          processAiUploadedFiles(e.dataTransfer.files);
                         }
                       }}
-                      className="hidden"
-                    />
+                      onClick={() => aiFileInputRef.current?.click()}
+                      id="drag-ai-images-dropzone"
+                    >
+                      <div className="p-4 bg-white rounded-full shadow-xs border border-slate-100 text-slate-400">
+                        <Upload className="w-8 h-8 text-indigo-600" />
+                      </div>
+                      <div className="text-center space-y-1">
+                        <p className="text-xs font-bold text-slate-700">신규 의류 촬영 사진들을 복수로 여기에 가져다 놓으십시오</p>
+                        <p className="text-[10px] text-slate-400">또는 클릭하여 기기 사진첩에서 바로 일괄 업로드 (Gemini 가공 지원)</p>
+                      </div>
+                      <input
+                        ref={aiFileInputRef}
+                        type="file"
+                        multiple
+                        accept="image/*"
+                        onChange={(e) => {
+                          if (e.target.files && e.target.files[0]) {
+                            processAiUploadedFiles(e.target.files);
+                          }
+                        }}
+                        className="hidden"
+                      />
+                    </div>
                   </div>
                 </div>
+
+                {/* 상태 메시지 */}
+                {importError && (
+                  <div className="p-3 bg-rose-50 text-rose-700 text-xs rounded-lg border border-rose-100 flex items-center gap-2">
+                    <AlertCircle className="w-4.5 h-4.5 shrink-0" />
+                    <span>{importError}</span>
+                  </div>
+                )}
+                {importInfo && !importError && (
+                  <div className="p-3 bg-emerald-50 text-emerald-700 text-xs rounded-lg border border-emerald-100 flex items-center gap-2">
+                    <Check className="w-4.5 h-4.5 shrink-0" />
+                    <span>{importInfo}</span>
+                    {Object.keys(importedMeta).length > 0 && (
+                      <span className="ml-auto font-bold">불러온 상품 정보 {Object.keys(importedMeta).length}건</span>
+                    )}
+                  </div>
+                )}
+
+                {/* 불러온 시트 정보 미리보기 (이미지 등록 전에도 확인 가능) */}
+                {Object.keys(importedMeta).length > 0 && (
+                  <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs" id="imported-meta-preview">
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50/60">
+                      <div className="flex items-center gap-1.5">
+                        <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                        <span className="text-xs font-bold text-slate-700">불러온 상품 정보 미리보기</span>
+                        <span className="text-[10px] font-bold text-slate-400">({Object.keys(importedMeta).length}건)</span>
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-medium">파일명이 샘플코드와 일치하는 이미지를 업로드하면 아래 정보가 자동 매칭됩니다.</span>
+                    </div>
+                    <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                      <table className="w-full text-[11px] text-left whitespace-nowrap">
+                        <thead className="bg-slate-50 text-slate-500 font-bold sticky top-0 z-10">
+                          <tr>
+                            <th className="px-3 py-2 font-bold">샘플코드</th>
+                            <th className="px-3 py-2 font-bold">샘플명</th>
+                            <th className="px-3 py-2 font-bold">위치번호</th>
+                            <th className="px-3 py-2 font-bold">칼라설명</th>
+                            <th className="px-3 py-2 font-bold">성별</th>
+                            <th className="px-3 py-2 font-bold">국가</th>
+                            <th className="px-3 py-2 font-bold">가격</th>
+                            <th className="px-3 py-2 font-bold">브랜드코드</th>
+                            <th className="px-3 py-2 font-bold">시즌</th>
+                            <th className="px-3 py-2 font-bold">소재</th>
+                            <th className="px-3 py-2 font-bold">특화샘플</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {Object.values(importedMeta).map((m, idx) => (
+                            <tr key={`${m.code}-${idx}`} className="hover:bg-slate-50/60">
+                              <td className="px-3 py-2 font-mono font-bold text-slate-700">{m.code || '-'}</td>
+                              <td className="px-3 py-2 text-slate-700 max-w-[220px] truncate" title={m.name}>{m.name || '-'}</td>
+                              <td className="px-3 py-2 text-slate-500">{m.locationNo || '-'}</td>
+                              <td className="px-3 py-2 text-slate-500 max-w-[160px] truncate" title={m.color}>{m.color || '-'}</td>
+                              <td className="px-3 py-2 text-slate-500">{m.gender || '-'}</td>
+                              <td className="px-3 py-2 text-slate-500">{m.country || '-'}</td>
+                              <td className="px-3 py-2 font-mono text-slate-500">{m.price ? m.price.toLocaleString() : '-'}</td>
+                              <td className="px-3 py-2 text-slate-500">{m.brandCode || '-'}</td>
+                              <td className="px-3 py-2 text-slate-500">{m.season || '-'}</td>
+                              <td className="px-3 py-2 text-slate-500 max-w-[160px] truncate" title={m.material}>{m.material || '-'}</td>
+                              <td className="px-3 py-2 text-slate-500">{m.specialBrand || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {/* AI Draft items list editor */}
                 {aiDraftItems.length > 0 && (
@@ -1735,9 +2478,9 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                       <div className="flex items-center gap-2">
                         <Sparkles className="w-5 h-5 text-indigo-600 animate-pulse" />
                         <div>
-                          <h4 className="text-sm font-bold text-indigo-950 font-sans">AI 일괄 대장 속성 분석 편집 테이블 ({aiDraftItems.length}개 의류 대기)</h4>
+                          <h4 className="text-sm font-bold text-indigo-950 font-sans">신규 샘플 이미지 속성 ({aiDraftItems.length}개 의류 대기)</h4>
                           <p className="text-[10px] text-slate-500 font-sans">
-                            개별 카드의 자동 작성 결과를 수정하거나 탭 후 "일괄 등록 완료"를 클릭하면 순차 자동 발급형 코드로 한 번에 영구 기록됩니다.
+                            개별 카드의 자동 작성 결과를 수정하거나 탭 후 "신규 샘플 이미지 일괄 등록"을 클릭하면 순차 자동 발급형 코드로 한 번에 영구 기록됩니다.
                           </p>
                         </div>
                       </div>
@@ -1748,24 +2491,14 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                         >
                           내역 전체비우기
                         </button>
-                        
-                        {/* Toggle button to switch between table & card views */}
+
+                        {/* 신규 샘플 이미지 일괄 등록 (등록 실행) */}
                         <button
-                          type="button"
-                          onClick={() => setAiViewMode(aiViewMode === 'card' ? 'table' : 'card')}
-                          className="text-xs font-bold text-indigo-750 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 py-2 px-4 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer font-sans"
+                          onClick={handleSaveBulkAiItems}
+                          className="py-2 px-4 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm font-sans transition-all flex items-center gap-1.5 cursor-pointer"
                         >
-                          {aiViewMode === 'card' ? (
-                            <>
-                              <List className="w-4 h-4 text-indigo-650" />
-                              <span>표 스타일로 전환</span>
-                            </>
-                          ) : (
-                            <>
-                              <LayoutGrid className="w-4 h-4 text-indigo-650" />
-                              <span>카드 스타일로 전환</span>
-                            </>
-                          )}
+                          <Check className="w-4 h-4" />
+                          <span>신규 샘플 이미지 일괄 등록</span>
                         </button>
                       </div>
                     </div>
@@ -1776,8 +2509,10 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                           <thead>
                             <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                               <th className="py-3 px-4 w-16 text-center">이미지</th>
+                              <th className="py-3 px-4 w-32">상품코드</th>
                               <th className="py-3 px-4 min-w-[200px]">상품명 *</th>
                               <th className="py-3 px-4 w-32">브랜드</th>
+                              <th className="py-3 px-4 w-28">특화 브랜드</th>
                               <th className="py-3 px-4 w-32">대여료 (원)</th>
                               <th className="py-3 px-4 w-32">상세 소재</th>
                               <th className="py-3 px-4 w-20">사이즈</th>
@@ -1813,6 +2548,15 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                                 <td className="py-2 px-4">
                                   <input
                                     type="text"
+                                    value={item.code}
+                                    onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, code: e.target.value } : x))}
+                                    placeholder="매칭 코드"
+                                    className={`w-full border py-1 px-2 rounded-md font-mono font-bold text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 ${item.metaMatched ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-100/50 border-slate-200 text-slate-800 focus:bg-white'}`}
+                                  />
+                                </td>
+                                <td className="py-2 px-4">
+                                  <input
+                                    type="text"
                                     value={item.name}
                                     onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, name: e.target.value } : x))}
                                     className="w-full bg-slate-100/50 hover:bg-slate-150/70 focus:bg-white border border-slate-200 py-1 px-2.5 rounded-md font-semibold text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-800"
@@ -1823,6 +2567,15 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                                     type="text"
                                     value={item.brand}
                                     onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, brand: e.target.value } : x))}
+                                    className="w-full bg-slate-100/50 focus:bg-white border border-slate-200 py-1 px-2 rounded-md font-medium text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-800"
+                                  />
+                                </td>
+                                <td className="py-2 px-4">
+                                  <input
+                                    type="text"
+                                    value={item.specialBrand}
+                                    onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, specialBrand: e.target.value } : x))}
+                                    placeholder="예: adidas"
                                     className="w-full bg-slate-100/50 focus:bg-white border border-slate-200 py-1 px-2 rounded-md font-medium text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-800"
                                   />
                                 </td>
@@ -1893,10 +2646,9 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                                     onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, category: e.target.value } : x))}
                                     className="w-full bg-slate-100/50 border border-slate-200/80 py-1 px-1 rounded-md text-[11px] font-semibold text-slate-850 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                                   >
-                                    <option value="유형화샘플">유형화샘플</option>
-                                    <option value="오리지널">오리지널</option>
-                                    <option value="촬영샘플">촬영샘플</option>
-                                    <option value="출장샘플">출장샘플</option>
+                                    {categoryOptionsWith(item.category).map((c) => (
+                                      <option key={c} value={c}>{c}</option>
+                                    ))}
                                   </select>
                                 </td>
                                 <td className="py-2 px-4 text-center">
@@ -1934,12 +2686,6 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                                   </div>
                                 )}
 
-                                {item.isAnalyzed && !item.isAnalyzing && (
-                                  <div className="absolute bottom-1 left-1.5 right-1.5 bg-indigo-650/90 text-white font-extrabold text-[8px] py-0.5 rounded-sm flex items-center justify-center gap-0.5 shadow-sm font-sans">
-                                    <Sparkles className="w-2 h-2 text-yellow-300" />
-                                    <span>AI 추천완료</span>
-                                  </div>
-                                )}
                               </div>
 
                               {/* Toggle Front / Back at the bottom of thumbnail if paired */}
@@ -1977,19 +2723,76 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
                             {/* 2-column or structured inputs form like the requested reference */}
                             <div className="flex-1 space-y-3 min-w-0 pr-2">
+                              {/* 상품코드 / 스프레드시트 매칭 상태 + 특화 브랜드 */}
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                  <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">상품코드</label>
+                                  <div className="relative">
+                                    <input
+                                      type="text"
+                                      value={item.code}
+                                      onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, code: e.target.value } : x))}
+                                      placeholder="스프레드시트 매칭 또는 직접 입력"
+                                      className={`w-full border py-1.5 px-3 rounded-lg text-xs font-mono font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white ${item.metaMatched ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-800'}`}
+                                    />
+                                    {item.metaMatched && (
+                                      <Check className="absolute right-2.5 top-2 w-3.5 h-3.5 text-emerald-500" />
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">특화 브랜드</label>
+                                  <input
+                                    type="text"
+                                    value={item.specialBrand}
+                                    onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, specialBrand: e.target.value } : x))}
+                                    placeholder="예: adidas, ARTEX"
+                                    className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white text-slate-800 font-sans"
+                                  />
+                                </div>
+                              </div>
+
+                              {/* 위치번호 / 등록자 / 상태 (스프레드시트 정보) */}
+                              <div className="grid grid-cols-3 gap-3">
+                                <div className="space-y-1">
+                                  <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">위치번호</label>
+                                  <input
+                                    type="text"
+                                    value={item.locationNo}
+                                    onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, locationNo: e.target.value } : x))}
+                                    className="w-full bg-slate-50 border border-slate-200 py-1.5 px-2 rounded-lg text-xs font-mono text-center focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white text-slate-800"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">등록자</label>
+                                  <input
+                                    type="text"
+                                    value={item.registerer}
+                                    onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, registerer: e.target.value } : x))}
+                                    className="w-full bg-slate-50 border border-slate-200 py-1.5 px-2 rounded-lg text-xs font-semibold text-center focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white text-slate-800 font-sans"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">상태</label>
+                                  <input
+                                    type="text"
+                                    value={item.status}
+                                    onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, status: e.target.value } : x))}
+                                    className="w-full bg-slate-50 border border-slate-200 py-1.5 px-2 rounded-lg text-[11px] font-bold text-center focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white text-slate-800 font-sans"
+                                  />
+                                </div>
+                              </div>
+
                               {/* Product Name */}
                               <div className="space-y-1">
                                 <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">상품명 (의류 명칭)</label>
-                                <div className="relative">
-                                  <input
-                                    type="text"
-                                    value={item.name}
-                                    onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, name: e.target.value } : x))}
-                                    className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 pr-8 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white text-slate-800 font-sans"
-                                    placeholder="옷 상품명을 입력하세요"
-                                  />
-                                  <Sparkles className="absolute right-2.5 top-2.5 w-3.5 h-3.5 text-indigo-400" />
-                                </div>
+                                <input
+                                  type="text"
+                                  value={item.name}
+                                  onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, name: e.target.value } : x))}
+                                  className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white text-slate-800 font-sans"
+                                  placeholder="옷 상품명을 입력하세요"
+                                />
                               </div>
 
                               {/* Brand & Price */}
@@ -2084,46 +2887,75 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                                 </div>
                               </div>
 
-                              {/* Gender Target and Category */}
-                              <div className="grid grid-cols-2 gap-3 pt-1">
-                                <div className="space-y-1">
-                                  <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">의류 계열</label>
-                                  <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                                    {[
-                                      { value: 'F', label: '여성용' },
-                                      { value: 'M', label: '남성용' },
-                                      { value: 'U', label: '공용' }
-                                    ].map(pill => (
-                                      <button
-                                        key={pill.value}
-                                        type="button"
-                                        onClick={() => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, gender: pill.value } : x))}
-                                        className={`flex-1 text-[10px] py-1 font-bold rounded-md transition-all cursor-pointer ${
-                                          item.gender === pill.value
-                                            ? 'bg-white text-indigo-700 shadow-xs ring-1 ring-black/5'
-                                            : 'text-slate-500 hover:text-slate-850'
-                                        }`}
-                                      >
-                                        {pill.label}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-
-                                <div className="space-y-1">
-                                  <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">대장 카테고리</label>
-                                  <select
-                                    value={item.category}
-                                    onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, category: e.target.value } : x))}
-                                    className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-[10px] font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white text-slate-800"
-                                  >
-                                    <option value="유형화샘플">유형화샘플</option>
-                                    <option value="오리지널">오리지널</option>
-                                    <option value="촬영샘플">촬영샘플</option>
-                                    <option value="출장샘플">출장샘플</option>
-                                  </select>
+                              {/* Gender Target */}
+                              <div className="space-y-1 pt-1">
+                                <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">의류 계열</label>
+                                <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                                  {[
+                                    { value: 'F', label: '여성용' },
+                                    { value: 'M', label: '남성용' },
+                                    { value: 'U', label: '공용' }
+                                  ].map(pill => (
+                                    <button
+                                      key={pill.value}
+                                      type="button"
+                                      onClick={() => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, gender: pill.value } : x))}
+                                      className={`flex-1 text-[10px] py-1 font-bold rounded-md transition-all cursor-pointer ${
+                                        item.gender === pill.value
+                                          ? 'bg-white text-indigo-700 shadow-xs ring-1 ring-black/5'
+                                          : 'text-slate-500 hover:text-slate-850'
+                                      }`}
+                                    >
+                                      {pill.label}
+                                    </button>
+                                  ))}
                                 </div>
                               </div>
+
+                              {/* Country & Category (전체 상품 필터와 동일한 값) */}
+                              {(() => {
+                                const itemNation = item.category === '중국샘플' ? '중국' : '한국';
+                                const catOpts = categoriesByCountry[itemNation] || categoryNames;
+                                return (
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div className="space-y-1">
+                                      <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">국가</label>
+                                      <select
+                                        value={itemNation}
+                                        onChange={(e) => {
+                                          const nation = e.target.value;
+                                          setAiDraftItems(prev => prev.map(x => {
+                                            if (x.id !== item.id) return x;
+                                            if (nation === '중국') {
+                                              return { ...x, country: 'CN', category: '중국샘플' };
+                                            }
+                                            const firstKr = (categoriesByCountry['한국'] || categoryNames)[0] || '';
+                                            return { ...x, country: 'KR', category: x.category === '중국샘플' ? firstKr : x.category };
+                                          }));
+                                        }}
+                                        className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-[10px] font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white text-slate-800"
+                                      >
+                                        <option value="한국">한국</option>
+                                        <option value="중국">중국</option>
+                                      </select>
+                                    </div>
+
+                                    <div className="space-y-1">
+                                      <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block font-sans">카테고리</label>
+                                      <select
+                                        value={catOpts.includes(item.category) ? item.category : ''}
+                                        onChange={(e) => setAiDraftItems(prev => prev.map(x => x.id === item.id ? { ...x, category: e.target.value } : x))}
+                                        className="w-full bg-slate-50 border border-slate-200 py-1.5 px-3 rounded-lg text-[10px] font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:bg-white text-slate-800"
+                                      >
+                                        <option value="" disabled>카테고리 선택</option>
+                                        {catOpts.map((c) => (
+                                          <option key={c} value={c}>{c}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                             </div>
 
                             {/* Delete pill */}
@@ -2139,15 +2971,6 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                       </div>
                     )}
 
-                    <div className="flex justify-end pt-4">
-                      <button
-                        onClick={handleSaveBulkAiItems}
-                        className="py-3 px-8 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md font-sans transition-all flex items-center gap-2 cursor-pointer"
-                      >
-                        <Check className="w-4 h-4" />
-                        <span>총 {aiDraftItems.length}개의 AI 완성 의류 옷장 대장에 일괄 등록 완료하기</span>
-                      </button>
-                    </div>
                   </div>
                 )}
               </div>
@@ -2459,6 +3282,17 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                 </div>
 
                 <div className="space-y-1">
+                  <label className="font-bold text-slate-600">특화 브랜드</label>
+                  <input
+                    type="text"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-violet-500"
+                    placeholder="예: adidas, ARTEX, Birdie"
+                    value={newSample.specialBrand || ''}
+                    onChange={(e) => setNewSample(prev => ({...prev, specialBrand: e.target.value}))}
+                  />
+                </div>
+
+                <div className="space-y-1">
                   <label className="font-bold text-slate-600">카테고리</label>
                   <div className="relative">
                     <select
@@ -2466,11 +3300,9 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                       value={newSample.category}
                       onChange={(e) => setNewSample(prev => ({...prev, category: e.target.value}))}
                     >
-                      <option value="오리지널">오리지널</option>
-                      <option value="자사샘플">자사샘플</option>
-                      <option value="중국샘플">중국샘플</option>
-                      <option value="유형화샘플">유형화샘플</option>
-                      <option value="EP샘플">EP샘플</option>
+                      {categoryOptionsWith(newSample.category).map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
                     </select>
                     <ChevronDown className="absolute right-2.5 top-2.5 w-4 h-4 text-slate-450 pointer-events-none" />
                   </div>
@@ -2559,9 +3391,6 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
             {/* Header Block */}
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
               <div className="flex items-center gap-2">
-                <span className="p-1 px-2.5 bg-indigo-50 text-indigo-700 border border-indigo-100 text-[10px] font-black rounded-md uppercase tracking-tight font-mono">
-                  Asset Customizer Studio
-                </span>
                 <h4 className="text-sm font-extrabold text-slate-800">의류 샘플 상세 정보 수정</h4>
               </div>
               <button onClick={() => setEditingSample(null)} className="text-slate-400 hover:text-slate-600 transition-colors p-1 rounded-lg hover:bg-slate-100">
@@ -2573,94 +3402,25 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
             <div className="p-6 overflow-y-auto space-y-6 flex-1 font-sans text-xs">
               
               {/* Image 1 - Redesigned Interactive Editor Block */}
-              <div className="border border-slate-200/85 rounded-xl p-5 bg-white flex flex-col md:flex-row gap-6 relative shadow-xs" id="apparel-redesign-card">
+              <div className="border border-slate-200/85 rounded-xl p-5 bg-white flex flex-col gap-6 relative shadow-xs" id="apparel-redesign-card">
+
+                <div className="flex flex-col md:flex-row gap-6">
                 
                 {/* Visual Section (Left) */}
                 <div className="w-full md:w-56 flex flex-col items-center shrink-0">
-                  <div className="relative w-48 h-60 bg-slate-50 rounded-xl border border-slate-150 overflow-hidden flex items-center justify-center shadow-2xs" id="apparel-edit-viewport">
+                  <div className="relative w-48 h-60 bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center shadow-2xs" id="apparel-edit-viewport">
                     
                     {/* Active preview title tag badge */}
                     <div className="absolute top-2.5 left-2.5 bg-slate-900/80 backdrop-blur-md text-white font-extrabold text-[9px] px-2 py-0.5 rounded-md uppercase tracking-wide shadow-sm z-20">
-                      {activePreviewSide === 'front' ? '전면' : '후면'} {(!showOriginal && (activePreviewSide === 'front' ? editingSample.imgFrontClean : editingSample.imgBackClean)) ? '(누끼)' : '(원본)'}
+                      {activePreviewSide === 'front' ? '전면' : '후면'}
                     </div>
-
-                    {/* Edit button overlay on top-right */}
-                    <div className="absolute top-2.5 right-2.5 z-25">
-                      <button
-                        type="button"
-                        onClick={() => setShowEditMenu(!showEditMenu)}
-                        className="bg-white/95 hover:bg-slate-100 border border-slate-200 text-slate-800 font-extrabold text-[9.5px] px-2.5 py-1 rounded-lg shadow-sm cursor-pointer transition-all flex items-center gap-1"
-                      >
-                        <Edit2 className="w-3 h-3 text-slate-600" />
-                        <span>편집</span>
-                      </button>
-
-                      {/* Dropdown Menu Popup - matching second screenshot exactly */}
-                      {showEditMenu && (
-                        <div className="absolute right-0 mt-1.5 bg-white border border-slate-200/90 p-1.5 rounded-xl shadow-xl w-40 z-35 space-y-1">
-                          <label className="flex items-center gap-2 hover:bg-slate-50 p-2 rounded-lg w-full text-slate-700 font-bold text-[10px] cursor-pointer transition-colors leading-none">
-                            <Edit2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                            <span>이미지 편집</span>
-                            <input 
-                              type="file" 
-                              accept="image/*" 
-                              className="hidden" 
-                              onChange={(e) => {
-                                handleSingleImageUpload(editingSample.id, activePreviewSide, e);
-                                setShowEditMenu(false);
-                              }}
-                            />
-                          </label>
-                          <div className="border-t border-slate-100 my-1" />
-                          <div className="flex items-center justify-between hover:bg-slate-50 p-2 rounded-lg text-slate-700 font-bold text-[10px] transition-colors leading-none font-sans">
-                            <span className="flex items-center gap-2">
-                              <ImageIcon className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                              <span>원본 이미지</span>
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setShowOriginal(!showOriginal);
-                              }}
-                              className={`w-8 h-4.5 rounded-full p-0.5 transition-colors duration-200 ease-in-out focus:outline-hidden cursor-pointer ${
-                                showOriginal ? 'bg-indigo-650' : 'bg-slate-250'
-                              }`}
-                            >
-                              <div className={`w-3.5 h-3.5 rounded-full bg-white shadow-3xs transform transition-transform duration-200 ease-in-out ${
-                                showOriginal ? 'translate-x-3.5' : 'translate-x-0'
-                              }`} />
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {isGeneratingBg ? (
-                      /* Generative AI background removal scanner animation */
-                      <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-xs flex flex-col items-center justify-center p-4 text-center z-35 select-none overflow-hidden animate-pulse">
-                        {/* Scanning scanner light line */}
-                        <div className="absolute top-0 left-0 w-full h-[3px] bg-gradient-to-r from-transparent via-violet-400 to-transparent shadow-[0_0_12px_#a78bfa] animate-bounce" style={{ animationDuration: '1.4s' }} />
-                        
-                        <div className="p-3 bg-violet-950/40 border border-violet-800/40 rounded-full text-violet-400 mb-2.5 animate-spin" style={{ animationDuration: '4s' }}>
-                          <RefreshCw className="w-5.5 h-5.5 animate-spin" />
-                        </div>
-                        
-                        <div className="space-y-1">
-                          <p className="text-[10px] font-black text-violet-400 tracking-wider font-sans">AI 누끼컷 생성 중...</p>
-                          <p className="text-[8.5px] text-slate-400 leading-tight">
-                            기계학습 실루엣 분리 및<br />
-                            조명 그림자 최적화 연산 중...
-                          </p>
-                        </div>
-                      </div>
-                    ) : null}
 
                     {/* Image rendering conditional branch */}
                     {(() => {
                       const hasRawImg = activePreviewSide === 'front' ? editingSample.imgFront : editingSample.imgBack;
                       const displayImg = activePreviewSide === 'front' 
-                        ? (showOriginal ? editingSample.imgFront : (editingSample.imgFrontClean || editingSample.imgFront))
-                        : (showOriginal ? editingSample.imgBack : (editingSample.imgBackClean || editingSample.imgBack));
+                        ? (editingSample.imgFrontClean || editingSample.imgFront)
+                        : (editingSample.imgBackClean || editingSample.imgBack);
 
                       if (!hasRawImg) {
                         return (
@@ -2719,56 +3479,15 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                     })}
                   </div>
 
-                  {/* Generate Cutout Action Badge Button */}
-                  <div className="w-48 mt-2.5">
-                    {(() => {
-                      const hasCleanImg = activePreviewSide === 'front' ? editingSample.imgFrontClean : editingSample.imgBackClean;
-                      if (hasCleanImg) {
-                        return (
-                          <button
-                            type="button"
-                            onClick={() => generateBgRemoval(activePreviewSide)}
-                            className="w-full py-1.5 bg-slate-50 hover:bg-violet-50 border border-slate-200 hover:border-violet-200 text-violet-650 font-extrabold text-[10px] rounded-lg text-center cursor-pointer transition-all shadow-3xs flex items-center justify-center gap-1.5"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5" />
-                            <span>AI 배경제거 다시실행</span>
-                          </button>
-                        );
-                      } else {
-                        return (
-                          <button
-                            type="button"
-                            onClick={() => generateBgRemoval(activePreviewSide)}
-                            className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-[10px] rounded-lg text-center cursor-pointer transition-all shadow-3xs flex items-center justify-center gap-1.5"
-                          >
-                            <Sparkles className="w-3.5 h-3.5" />
-                            <span>AI 배경제거 누끼컷 생성</span>
-                          </button>
-                        );
-                      }
-                    })()}
-                  </div>
                 </div>
 
                 {/* Form fields Section (Right side of design) */}
                 <div className="flex-1 space-y-4">
                   
-                  {/* Row 1: 상품명 with automatic input badge */}
+                  {/* Row 1: 상품명 */}
                   <div className="flex flex-col gap-1 w-full">
                     <div className="flex justify-between items-center">
                       <span className="text-[11px] font-bold text-slate-700">상품명</span>
-                      <button
-                        type="button"
-                        onClick={() => setAutoFillOn(prev => !prev)}
-                        className={`px-1.5 py-0.5 border text-[9px] font-black rounded-md transition-all flex items-center gap-1 cursor-pointer ${
-                          autoFillOn 
-                            ? 'bg-blue-50 border-blue-300 text-blue-500 shadow-3xs' 
-                            : 'bg-slate-50 border-slate-200 text-slate-400'
-                        }`}
-                      >
-                        <span className={`w-1 h-1 rounded-full ${autoFillOn ? 'bg-blue-500 animate-pulse' : 'bg-slate-300'}`} />
-                        {autoFillOn ? 'ON 자동입력' : 'OFF 수동입력'}
-                      </button>
                     </div>
                     <input
                       type="text"
@@ -2779,55 +3498,8 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                     />
                   </div>
 
-                  {/* Row 2: 색상 (Tag inputs) & 카테고리 (Category selection) */}
+                  {/* Row 2: 카테고리 & 컨디션 */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {/* 색상 Tags input field */}
-                    <div className="flex flex-col gap-1 w-full">
-                      <span className="text-[11px] font-bold text-slate-700">색상</span>
-                      <div className="flex flex-wrap items-center gap-1.5 p-1.5 border border-slate-300 bg-slate-50/50 rounded-lg min-h-[32px] focus-within:ring-1 focus-within:ring-blue-500 focus-within:bg-white transition-all">
-                        {(() => {
-                          const colorArr = editingSample.color ? editingSample.color.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
-                          return (
-                            <>
-                              {colorArr.map((tag: string, index: number) => (
-                                <span key={index} className="inline-flex items-center gap-1 bg-white text-slate-700 text-[10px] font-bold py-0.5 px-2 rounded-full border border-slate-205 shadow-3xs">
-                                  {tag}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const updated = colorArr.filter((t: string) => t !== tag).join(', ');
-                                      setEditingSample(prev => prev ? {...prev, color: updated} : null);
-                                    }}
-                                    className="text-slate-400 hover:text-rose-500 cursor-pointer font-bold select-none text-[9px]"
-                                  >
-                                    ✕
-                                  </button>
-                                </span>
-                              ))}
-                              <input
-                                type="text"
-                                placeholder={colorArr.length === 0 ? "예: 오렌지 (엔터로 추가)" : ""}
-                                value={colorInput}
-                                onChange={(e) => setColorInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ',') {
-                                    e.preventDefault();
-                                    const clean = colorInput.trim().replace(/^,+|,+$/g, '');
-                                    if (clean && !colorArr.includes(clean)) {
-                                      const updatedList = [...colorArr, clean].join(', ');
-                                      setEditingSample(prev => prev ? {...prev, color: updatedList} : null);
-                                      setColorInput('');
-                                    }
-                                  }
-                                }}
-                                className="flex-1 min-w-[70px] bg-transparent text-xs text-slate-800 focus:outline-none py-0.5 font-medium"
-                              />
-                            </>
-                          );
-                        })()}
-                      </div>
-                    </div>
-
                     {/* 카테고리 selection dropdown */}
                     <div className="flex flex-col gap-1 w-full">
                       <span className="text-[11px] font-bold text-slate-700">카테고리</span>
@@ -2837,125 +3509,15 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                           value={editingSample.category}
                           onChange={(e) => setEditingSample(prev => prev ? {...prev, category: e.target.value} : null)}
                         >
-                          <option value="셔츠">셔츠</option>
-                          <option value="아우터">아우터</option>
-                          <option value="원단">원단</option>
-                          <option value="오리지널">오리지널</option>
-                          <option value="자사샘플">자사샘플</option>
-                          <option value="중국샘플">중국샘플</option>
-                          <option value="유형화샘플">유형화샘플</option>
-                          <option value="EP샘플">EP샘플</option>
+                          {categoryOptionsWith(editingSample.category).map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
                         </select>
                         <ChevronDown className="absolute right-2.5 top-2.5 w-4 h-4 text-slate-450 pointer-events-none" />
                       </div>
                     </div>
-                  </div>
 
-                  {/* Row 3: 브랜드 & 원산지 */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="flex flex-col gap-1 w-full">
-                      <span className="text-[11px] font-bold text-slate-700">브랜드</span>
-                      <input
-                        type="text"
-                        className="w-full px-3 py-1.5 border border-slate-300 bg-white rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
-                        value={editingSample.brand}
-                        onChange={(e) => setEditingSample(prev => prev ? {...prev, brand: e.target.value} : null)}
-                        placeholder="GU"
-                      />
-                    </div>
-
-                    <div className="flex flex-col gap-1 w-full">
-                      <span className="text-[11px] font-bold text-slate-700">원산지</span>
-                      <input
-                        type="text"
-                        className="w-full px-3 py-1.5 border border-slate-300 bg-white rounded-lg text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
-                        value={editingSample.country}
-                        onChange={(e) => setEditingSample(prev => prev ? {...prev, country: e.target.value} : null)}
-                        placeholder="원산지"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Row 4: 소재 (Tags) & 상품군 */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {/* 소재 tag input */}
-                    <div className="flex flex-col gap-1 w-full">
-                      <span className="text-[11px] font-bold text-slate-700">소재</span>
-                      <div className="flex flex-wrap items-center gap-1.5 p-1.5 border border-slate-300 bg-slate-50/50 rounded-lg min-h-[32px] focus-within:ring-1 focus-within:ring-blue-500 focus-within:bg-white transition-all">
-                        {(() => {
-                          const matArr = editingSample.material ? editingSample.material.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
-                          return (
-                            <>
-                              {matArr.map((tag: string, index: number) => (
-                                <span key={index} className="inline-flex items-center gap-1 bg-white text-slate-700 text-[10px] font-bold py-0.5 px-2 rounded-full border border-slate-205 shadow-3xs">
-                                  {tag}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const updated = matArr.filter((t: string) => t !== tag).join(', ');
-                                      setEditingSample(prev => prev ? {...prev, material: updated} : null);
-                                    }}
-                                    className="text-slate-400 hover:text-rose-500 cursor-pointer font-bold select-none text-[9px]"
-                                  >
-                                    ✕
-                                  </button>
-                                </span>
-                              ))}
-                              <input
-                                type="text"
-                                placeholder={matArr.length === 0 ? "예: 린넨,코튼" : ""}
-                                value={materialInput}
-                                onChange={(e) => setMaterialInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ',') {
-                                    e.preventDefault();
-                                    const clean = materialInput.trim().replace(/^,+|,+$/g, '');
-                                    if (clean && !matArr.includes(clean)) {
-                                      const updatedList = [...matArr, clean].join(', ');
-                                      setEditingSample(prev => prev ? {...prev, material: updatedList} : null);
-                                      setMaterialInput('');
-                                    }
-                                  }
-                                }}
-                                className="flex-1 min-w-[70px] bg-transparent text-xs text-slate-800 focus:outline-none py-0.5 font-medium"
-                              />
-                            </>
-                          );
-                        })()}
-                      </div>
-                    </div>
-
-                    {/* Classification Button selection */}
-                    <div className="flex flex-col gap-1 w-full">
-                      <span className="text-[11px] font-bold text-slate-700">상품군</span>
-                      <div className="flex gap-2 mt-0.5">
-                        {[
-                          { label: '여성', value: 'F' },
-                          { label: '남성', value: 'M' },
-                          { label: '공용', value: 'U' },
-                        ].map((pill) => {
-                          const isSelected = editingSample.gender === pill.value;
-                          return (
-                            <button
-                              key={pill.value}
-                              type="button"
-                              onClick={() => setEditingSample(prev => prev ? {...prev, gender: pill.value} : null)}
-                              className={`px-4 py-1 rounded-full border text-xs font-bold cursor-pointer transition-all flex-1 ${
-                                isSelected
-                                  ? 'bg-blue-50 border-blue-400 text-blue-600 font-extrabold shadow-3xs scale-102'
-                                  : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
-                              }`}
-                            >
-                              {pill.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Row 5: 컨디션 상태 조율 select */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* 컨디션 selection dropdown */}
                     <div className="flex flex-col gap-1 w-full">
                       <span className="text-[11px] font-bold text-slate-700">컨디션</span>
                       <div className="relative">
@@ -2973,10 +3535,163 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                         <ChevronDown className="absolute right-2.5 top-2.5 w-4 h-4 text-slate-500 pointer-events-none" />
                       </div>
                     </div>
-
-                    <div className="hidden sm:block" />
                   </div>
 
+                  {/* Row 3: 브랜드 & 특화 브랜드 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="flex flex-col gap-1 w-full">
+                      <span className="text-[11px] font-bold text-slate-700">브랜드</span>
+                      <input
+                        type="text"
+                        className="w-full px-3 py-1.5 border border-slate-300 bg-white rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+                        value={editingSample.brand}
+                        onChange={(e) => setEditingSample(prev => prev ? {...prev, brand: e.target.value} : null)}
+                        placeholder="GU"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1 w-full">
+                      <span className="text-[11px] font-bold text-slate-700">특화 브랜드</span>
+                      <input
+                        type="text"
+                        className="w-full px-3 py-1.5 border border-slate-300 bg-white rounded-lg text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+                        value={editingSample.specialBrand || ''}
+                        onChange={(e) => setEditingSample(prev => prev ? {...prev, specialBrand: e.target.value} : null)}
+                        placeholder="예: adidas, ARTEX, Birdie"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Row 4: 원산지 & 상품군 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="flex flex-col gap-1 w-full">
+                      <span className="text-[11px] font-bold text-slate-700">원산지</span>
+                      <input
+                        type="text"
+                        className="w-full px-3 py-1.5 border border-slate-300 bg-white rounded-lg text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+                        value={editingSample.country}
+                        onChange={(e) => setEditingSample(prev => prev ? {...prev, country: e.target.value} : null)}
+                        placeholder="원산지"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1 w-full">
+                      <span className="text-[11px] font-bold text-slate-700">상품군</span>
+                      <div className="flex gap-2">
+                        {[
+                          { label: '여성', value: 'F' },
+                          { label: '남성', value: 'M' },
+                          { label: '공용', value: 'U' },
+                        ].map((pill) => {
+                          const isSelected = editingSample.gender === pill.value;
+                          return (
+                            <button
+                              key={pill.value}
+                              type="button"
+                              onClick={() => setEditingSample(prev => prev ? {...prev, gender: pill.value} : null)}
+                              className={`px-4 py-1.5 rounded-full border text-xs font-bold cursor-pointer transition-all flex-1 ${
+                                isSelected
+                                  ? 'bg-blue-50 border-blue-400 text-blue-600 font-extrabold shadow-3xs'
+                                  : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
+                              }`}
+                            >
+                              {pill.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+
+                {/* AI-Generated Tags (상품 정보 카드 하단에 포함) */}
+                <div className="pt-5 border-t border-slate-200/70" id="ai-generated-tags-section">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-extrabold text-slate-900 tracking-tight flex items-center gap-1.5 font-sans">
+                      <Sparkles className="w-3.5 h-3.5 text-violet-500" />
+                      AI 생성 태그
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleGenerateAiTags}
+                      disabled={aiTagLoading}
+                      className="inline-flex items-center gap-1.5 bg-violet-50 hover:bg-violet-100 disabled:opacity-60 disabled:cursor-not-allowed text-violet-700 border border-violet-200 text-[11px] font-bold py-1.5 px-3 rounded-lg transition-colors cursor-pointer"
+                    >
+                      {aiTagLoading ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          분석 중…
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-3.5 h-3.5" />
+                          AI 태그 생성
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2">
+                    {AI_TAG_CATEGORIES.map(({ key, label, placeholder }) => {
+                      const tags = (editingSample.aiTags || {})[key] || [];
+                      return (
+                        <div key={key} className="flex items-center gap-2.5 min-w-0">
+                          <span className="shrink-0 w-[60px] text-[11px] font-bold text-slate-500">{label}</span>
+                          <div className="flex flex-nowrap items-center gap-1.5 flex-1 min-w-0 min-h-[30px] overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                            {tags.map((tag, index) => (
+                              <span
+                                key={`${key}-${tag}-${index}`}
+                                className="inline-flex shrink-0 items-center gap-1 bg-white text-slate-700 text-[11px] font-bold py-1 px-2.5 rounded-full border border-slate-205 shadow-3xs whitespace-nowrap"
+                              >
+                                <Tag className="w-3 h-3 text-violet-400" />
+                                {tag}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingSample((prev) => {
+                                      if (!prev) return prev;
+                                      const next: AiTagGroups = { ...(prev.aiTags || {}) };
+                                      next[key] = (next[key] || []).filter((t) => t !== tag);
+                                      if (next[key]!.length === 0) delete next[key];
+                                      return { ...prev, aiTags: next };
+                                    });
+                                  }}
+                                  className="text-slate-400 hover:text-rose-500 cursor-pointer font-bold select-none text-[9px] ml-0.5"
+                                >
+                                  ✕
+                                </button>
+                              </span>
+                            ))}
+                            <input
+                              type="text"
+                              placeholder={tags.length === 0 ? placeholder : ''}
+                              value={aiTagInputs[key] || ''}
+                              onChange={(e) => setAiTagInputs((prev) => ({ ...prev, [key]: e.target.value }))}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ',') {
+                                  e.preventDefault();
+                                  const clean = (aiTagInputs[key] || '').trim().replace(/^,+|,+$/g, '');
+                                  if (clean) {
+                                    setEditingSample((prev) => {
+                                      if (!prev) return prev;
+                                      const next: AiTagGroups = { ...(prev.aiTags || {}) };
+                                      const arr = next[key] || [];
+                                      if (!arr.includes(clean)) next[key] = [...arr, clean];
+                                      return { ...prev, aiTags: next };
+                                    });
+                                    setAiTagInputs((prev) => ({ ...prev, [key]: '' }));
+                                  }
+                                }
+                              }}
+                              className="flex-1 min-w-[90px] bg-transparent text-xs text-slate-800 focus:outline-none py-0.5 font-medium"
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
 
@@ -2984,7 +3699,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
               <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-5 space-y-4 shadow-3xs" id="technical-asset-specs">
                 <span className="text-xs font-extrabold text-slate-900 tracking-tight flex items-center gap-1.5 font-sans">
                   <span className="w-1.5 h-3 bg-indigo-600 rounded-xs" />
-                  기타 대장 정보 및 식별자 제어
+                  기타 정보
                 </span>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -3158,7 +3873,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                 {/* FRONT & BACK Image replacements pickers */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-200/60">
                   <div className="flex flex-col gap-2">
-                    <span className="font-bold text-slate-500 text-[11px]">모달 전면 사진 갱신 (FRONT)</span>
+                    <span className="font-bold text-slate-500 text-[11px]">상품 전면 사진 갱신 (FRONT)</span>
                     <div className="flex items-center gap-3 bg-white p-2 border border-slate-200/90 rounded-lg shadow-3xs">
                       <div className="w-12 h-12 bg-slate-50 border border-slate-200 rounded-lg overflow-hidden shrink-0 flex items-center justify-center shadow-3xs">
                         {editingSample.imgFront ? (
@@ -3181,7 +3896,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                   </div>
 
                   <div className="flex flex-col gap-2">
-                    <span className="font-bold text-slate-500 text-[11px]">모달 후면 사진 갱신 (BACK)</span>
+                    <span className="font-bold text-slate-500 text-[11px]">상품 후면 사진 갱신 (BACK)</span>
                     <div className="flex items-center gap-3 bg-white p-2 border border-slate-200/90 rounded-lg shadow-3xs">
                       <div className="w-12 h-12 bg-slate-50 border border-slate-200 rounded-lg overflow-hidden shrink-0 flex items-center justify-center shadow-3xs">
                         {editingSample.imgBack ? (

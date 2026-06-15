@@ -5,7 +5,7 @@
   "type": "module",
   "description": "의류 샘플 대여 관리 시스템 — AI 연체 대응 메일링 에이전트 탑재 어드민",
   "scripts": {
-    "dev": "tsx watch server.ts",
+    "dev": "tsx watch --ignore \"**/database.json\" --ignore \"**/data/**\" server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "NODE_ENV=production node dist/server.cjs",
     "clean": "rm -rf dist",

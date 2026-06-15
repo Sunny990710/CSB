@@ -1,10 +1,15 @@
 export type SampleStatus = '대여가능' | '대여중' | '연체중' | '분실' | '부평보관';
 
+// AI 생성 태그 카테고리 (핏/디자인/소재/색상/스타일/제품설명)
+export type AiTagCategory = 'fit' | 'design' | 'material' | 'color' | 'style' | 'season';
+export type AiTagGroups = Partial<Record<AiTagCategory, string[]>>;
+
 export interface Sample {
   id: number;
   regDate: string;
   status: SampleStatus;
   brand: string;
+  specialBrand?: string; // 특화 브랜드 (예: adidas, ARTEX, Birdie)
   locationNo: string;
   code: string;
   name: string;
@@ -26,6 +31,8 @@ export interface Sample {
   material: string;
   size?: string;
   condition?: string;
+  aiTags?: AiTagGroups;     // AI가 생성한 태그 (핏/디자인/소재/색상/스타일/제품설명 카테고리별)
+  location?: string;        // 위치 (창고/보관 위치)
   
   // Real fields from product specifications worksheet
   rentalFee?: number;       // 대여료 (e.g., 15000)
@@ -50,6 +57,8 @@ export interface Member {
   email: string;
   phone: string;
   groupName: string;
+  affiliation?: string; // 소속 (예: 패션BG 본부)
+  brand?: string;       // 브랜드 (예: 패션연구소)
   useYn: '사용' | '미사용';
 }
 
@@ -58,6 +67,14 @@ export interface Group {
   name: string;
   description: string;
   useYn: '사용' | '미사용';
+}
+
+export interface Category {
+  id: string;
+  code: string;
+  name: string;
+  useYn: '사용' | '미사용';
+  parentId?: string | null; // null/undefined = 최상위 카테고리
 }
 
 export interface Rental {

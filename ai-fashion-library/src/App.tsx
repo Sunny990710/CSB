@@ -4,33 +4,32 @@ import {
   Columns3, Package, Users, BarChart3, Receipt, Settings, Bell, 
   HelpCircle, LogOut, CheckCircle, RefreshCw, AlertTriangle, ChevronDown, ChevronLeft,
   LayoutGrid, Folder, Activity, Trash2, ShieldCheck, Sparkles, Database,
-  Upload, ShoppingCart, RotateCcw
+  Upload, ShoppingCart, RotateCcw, ArrowUpRight, History, Tags, User, Clock
 } from 'lucide-react';
-import { Sample, Rental, Member, Group } from './types';
+import { Sample, Rental, Member, Group, Category } from './types';
 import DashboardView from './components/DashboardView';
 import SampleManagerView from './components/SampleManagerView';
 import MemberManagerView from './components/MemberManagerView';
 import RentalManagerView from './components/RentalManagerView';
+import CategoryManagerView from './components/CategoryManagerView';
 import LoginView from './components/LoginView';
+import logoUrl from './assets/logo.png';
 
 const AUTH_STORAGE_KEY = 'csb_auth_member_id';
 
-function getInitials(name: string): string {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.slice(0, 2);
-}
-
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rentals' | 'statistics' | 'members'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rental_scan' | 'rental_status' | 'categories' | 'members'>('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [rentalMenuOpen, setRentalMenuOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [notifMenuOpen, setNotifMenuOpen] = useState(false);
   
   // Master states loaded from full db endpoint
   const [samples, setSamples] = useState<Sample[]>([]);
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorWord, setErrorWord] = useState('');
   const [currentUser, setCurrentUser] = useState<Member | null>(null);
@@ -48,6 +47,7 @@ export default function App() {
         setRentals(data.rentals || []);
         setMembers(data.members || []);
         setGroups(data.groups || []);
+        setCategories(data.categories || []);
         setErrorWord('');
         setLoading(false);
       })
@@ -56,6 +56,23 @@ export default function App() {
         setErrorWord('네트워크 지연 혹은 로컬 서버 데이터 미확보 상태입니다. 잠시 후 재시도하십시오.');
         setLoading(false);
       });
+  };
+
+  // 대여/반납 등 인라인 작업 후 — 로딩 화면 없이 데이터만 갱신 (실시간 로그 유지)
+  const handleSilentRefresh = () => {
+    fetch('/api/db')
+      .then((res) => {
+        if (!res.ok) throw new Error('서버 데이터를 전송받지 못했습니다.');
+        return res.json();
+      })
+      .then((data) => {
+        setSamples(data.samples || []);
+        setRentals(data.rentals || []);
+        setMembers(data.members || []);
+        setGroups(data.groups || []);
+        setCategories(data.categories || []);
+      })
+      .catch((err) => console.error('Silent refresh error:', err));
   };
 
   useEffect(() => {
@@ -82,17 +99,19 @@ export default function App() {
   };
 
   // Generic Save / Update back to the server.ts JSON db
-  const handleSaveDB = (newSamples: Sample[], newMembers?: Member[], newGroups?: Group[], newRentals?: Rental[]) => {
+  const handleSaveDB = (newSamples: Sample[], newMembers?: Member[], newGroups?: Group[], newRentals?: Rental[], newCategories?: Category[]) => {
     // Optimistic UI update
     const updatedSamples = newSamples;
     const updatedMembers = newMembers || members;
     const updatedGroups = newGroups || groups;
     const updatedRentals = newRentals || rentals;
+    const updatedCategories = newCategories || categories;
 
     setSamples(updatedSamples);
     setMembers(updatedMembers);
     setGroups(updatedGroups);
     setRentals(updatedRentals);
+    setCategories(updatedCategories);
 
     fetch('/api/db/save', {
       method: 'POST',
@@ -101,7 +120,8 @@ export default function App() {
         samples: updatedSamples,
         members: updatedMembers,
         groups: updatedGroups,
-        rentals: updatedRentals
+        rentals: updatedRentals,
+        categories: updatedCategories
       })
     })
       .then((res) => res.json())
@@ -122,6 +142,21 @@ export default function App() {
     return <LoginView members={members} onLogin={handleLogin} />;
   }
 
+  // 알림: 연체 중이거나 반납 예정일이 임박한(3일 이내) 대여 건 집계
+  const DUE_SOON_DAYS = 3;
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const overdueRentals = rentals.filter((r) => r.status === '연체중');
+  const dueSoonRentals = rentals.filter((r) => {
+    if (r.status === '반납완료' || r.status === '연체중') return false;
+    if (!r.dueDate) return false;
+    const due = new Date(r.dueDate);
+    due.setHours(0, 0, 0, 0);
+    const diffDays = Math.round((due.getTime() - startOfToday.getTime()) / 86400000);
+    return diffDays >= 0 && diffDays <= DUE_SOON_DAYS;
+  });
+  const notifCount = overdueRentals.length + dueSoonRentals.length;
+
   return (
     <div className="h-screen max-h-screen bg-[#f8fafc] flex flex-col font-sans antialiased text-slate-800 overflow-hidden" id="applet-viewport">
       
@@ -130,26 +165,23 @@ export default function App() {
         
         {/* Left Side App Navigation Navigation panel (Styled carefully as Screenshot 1 "이미지허브") */}
         <aside className={`${isSidebarCollapsed ? 'w-16' : 'w-60'} bg-[#0c0a1e] p-4 hidden md:flex flex-col justify-between shrink-0 border-r border-indigo-950/30 overflow-x-hidden overflow-y-auto transition-[width] duration-300 ease-in-out`} id="sidebar-navigator">
-          <div className="space-y-4">
+          <div className="space-y-6">
             
             {/* CSB styled Title Header */}
             <div
-              className={`pb-3.5 border-b border-[#ffffff]/10 my-1 px-1.5 flex ${
+              className={`pb-4 border-b border-[#ffffff]/10 mt-1 mb-2 px-1.5 flex ${
                 isSidebarCollapsed ? 'flex-col items-center gap-2' : 'items-center justify-between'
               }`}
               id="sidebar-logo-header"
             >
-              <div className={`flex items-center gap-2 min-w-0 ${isSidebarCollapsed ? 'justify-center' : ''}`}>
-                <div className="w-5 h-5 rounded-full bg-violet-500 flex items-center justify-center shrink-0">
-                  <div className="w-2 h-2 rounded-full bg-white" />
-                </div>
-                <span
-                  className={`text-[14px] font-black tracking-wide text-white font-sans whitespace-nowrap overflow-hidden transition-[opacity,max-width] duration-300 ease-in-out ${
-                    isSidebarCollapsed ? 'max-w-0 opacity-0' : 'max-w-[4rem] opacity-100'
+              <div className={`flex items-center min-w-0 ${isSidebarCollapsed ? 'justify-center' : ''}`}>
+                <img
+                  src={logoUrl}
+                  alt="CSB"
+                  className={`h-6 w-auto object-contain shrink-0 transition-[opacity,max-width] duration-300 ease-in-out ${
+                    isSidebarCollapsed ? 'max-w-0 opacity-0' : 'max-w-[7rem] opacity-100'
                   }`}
-                >
-                  CSB
-                </span>
+                />
               </div>
               <button 
                 onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
@@ -166,11 +198,83 @@ export default function App() {
                 { id: 'dashboard', label: '홈', icon: LayoutGrid },
                 { id: 'upload', label: '업로드', icon: Upload },
                 { id: 'samples', label: '상품관리', icon: Package },
-                { id: 'rentals', label: '대여관리', icon: Activity },
-                { id: 'statistics', label: '통계', icon: BarChart3 },
+                {
+                  id: 'rentals',
+                  label: '대여관리',
+                  icon: Activity,
+                  children: [
+                    { id: 'rental_scan', label: '대여/반납하기', icon: ArrowUpRight },
+                    { id: 'rental_status', label: '대여/반납 현황', icon: History },
+                  ],
+                },
+                { id: 'categories', label: '카테고리 관리', icon: Tags },
                 { id: 'members', label: '설정', icon: Settings },
               ].map((item) => {
                 const Icon = item.icon;
+
+                // --- Expandable group (대여관리) ---
+                if ('children' in item && item.children) {
+                  const groupActive = item.children.some((c) => c.id === activeTab);
+                  const showChildren = !isSidebarCollapsed && (rentalMenuOpen || groupActive);
+                  return (
+                    <div key={item.id}>
+                      <button
+                        onClick={() => {
+                          if (isSidebarCollapsed) {
+                            setActiveTab('rental_scan');
+                          } else {
+                            setRentalMenuOpen((o) => !o);
+                          }
+                        }}
+                        className={`w-full text-left py-2.5 rounded-lg text-xs font-bold transition-colors flex items-center border-l-[3px] border-transparent group cursor-pointer text-slate-400 hover:text-white hover:bg-white/5 ${
+                          isSidebarCollapsed ? 'justify-center px-0' : 'px-3.5 justify-between'
+                        }`}
+                        id={`sidebar-btn-${item.id}`}
+                        title={isSidebarCollapsed ? item.label : undefined}
+                      >
+                        <div className={`flex items-center min-w-0 ${isSidebarCollapsed ? '' : 'gap-3'}`}>
+                          <Icon className="w-4 h-4 shrink-0 transition-colors text-slate-500 group-hover:text-slate-300" />
+                          <span
+                            className={`tracking-wide whitespace-nowrap overflow-hidden transition-[opacity,max-width] duration-300 ease-in-out ${
+                              isSidebarCollapsed ? 'max-w-0 opacity-0' : 'max-w-[8rem] opacity-100'
+                            }`}
+                          >
+                            {item.label}
+                          </span>
+                        </div>
+                        {!isSidebarCollapsed && (
+                          <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${showChildren ? 'rotate-180' : ''}`} />
+                        )}
+                      </button>
+
+                      {showChildren && (
+                        <div className="mt-1 space-y-1">
+                          {item.children.map((child) => {
+                            const CIcon = child.icon;
+                            const cActive = activeTab === child.id;
+                            return (
+                              <button
+                                key={child.id}
+                                onClick={() => setActiveTab(child.id as any)}
+                                className={`w-full text-left py-2 pl-10 pr-3.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-2.5 border-l-[3px] cursor-pointer ${
+                                  cActive
+                                    ? 'bg-violet-500/15 text-violet-300 border-violet-500'
+                                    : 'text-slate-500 hover:text-white hover:bg-white/5 border-transparent'
+                                }`}
+                                id={`sidebar-btn-${child.id}`}
+                              >
+                                <CIcon className={`w-3.5 h-3.5 shrink-0 ${cActive ? 'text-violet-400' : 'text-slate-500'}`} />
+                                <span className="tracking-wide whitespace-nowrap">{child.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                // --- Regular flat item ---
                 const isActive = activeTab === item.id;
                 return (
                   <button
@@ -271,8 +375,11 @@ export default function App() {
             <option value="dashboard">🏠 홈 (대시보드)</option>
             <option value="upload">⬆️ 업로드 (일괄 의류 매칭)</option>
             <option value="samples">📂 상품관리 (샘플 대장)</option>
-            <option value="rentals">📋 대여관리 (대여 현황 및 알림)</option>
-            <option value="statistics">📊 통계 (자산 분석 현황)</option>
+            <optgroup label="📋 대여관리">
+              <option value="rental_scan">🔄 대여/반납하기</option>
+              <option value="rental_status">🕘 대여/반납 현황</option>
+            </optgroup>
+            <option value="categories">🏷️ 카테고리 관리</option>
             <option value="members">⚙️ 설정 (권한 관리)</option>
           </select>
         </div>
@@ -281,31 +388,120 @@ export default function App() {
         <div className="flex-1 flex flex-col overflow-hidden">
           
           {/* Main Top Header supporting modern searches & user statuses */}
-          <header className="bg-white border-b border-[#e2e8f0]/80 h-14 px-6 shrink-0 flex items-center justify-end" id="workspace-main-header">
+          <header className="bg-white border-b border-[#e2e8f0]/80 h-14 px-6 shrink-0 flex items-center justify-end gap-1.5" id="workspace-main-header">
             {currentUser && (
-              <div className="flex items-center gap-3 text-xs" id="header-user-badge">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-full bg-violet-600 text-white font-mono flex items-center justify-center font-extrabold text-[10px]">
-                    {getInitials(currentUser.name)}
-                  </div>
-                  <div className="text-[11px] font-medium hidden sm:block">
-                    <span className="font-extrabold text-slate-800">{currentUser.name}</span>
-                    <span className="text-slate-500"> 님 ({currentUser.groupName})</span>
-                  </div>
+              <>
+                <div className="relative">
+                  <button
+                    onClick={() => setNotifMenuOpen((o) => !o)}
+                    className="relative p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                    title="알림"
+                  >
+                    <Bell className="w-4.5 h-4.5" />
+                    {notifCount > 0 && (
+                      <span className="absolute top-0.5 right-0.5 min-w-4 h-4 px-1 rounded-full bg-rose-500 text-white text-[9px] font-extrabold flex items-center justify-center leading-none ring-2 ring-white">
+                        {notifCount > 99 ? '99+' : notifCount}
+                      </span>
+                    )}
+                  </button>
+
+                  {notifMenuOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setNotifMenuOpen(false)} />
+                      <div className="absolute right-0 top-full mt-2 w-80 bg-white border border-slate-200 rounded-xl shadow-lg z-50 overflow-hidden" id="header-notif-dropdown">
+                        <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                          <span className="text-xs font-extrabold text-slate-800">반납 알림</span>
+                          <span className="text-[10px] font-bold text-slate-400">{notifCount}건</span>
+                        </div>
+                        <div className="max-h-80 overflow-y-auto">
+                          {notifCount === 0 ? (
+                            <div className="px-4 py-8 text-center text-[11px] text-slate-400 font-semibold">
+                              연체 중이거나 반납이 임박한 상품이 없습니다.
+                            </div>
+                          ) : (
+                            <>
+                              {overdueRentals.map((r) => (
+                                <button
+                                  key={r.rentalId}
+                                  onClick={() => {
+                                    setNotifMenuOpen(false);
+                                    setActiveTab('rental_status');
+                                  }}
+                                  className="w-full text-left px-4 py-2.5 hover:bg-slate-50 flex items-start gap-2.5 border-b border-slate-50 cursor-pointer"
+                                >
+                                  <AlertTriangle className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-[11px] font-bold text-slate-800 truncate">{r.sampleName}</div>
+                                    <div className="text-[10px] text-slate-400 truncate">{r.borrowerName} · {r.sampleCode}</div>
+                                    <div className="text-[10px] font-bold text-rose-500 mt-0.5">연체중 · 반납예정 {r.dueDate}</div>
+                                  </div>
+                                </button>
+                              ))}
+                              {dueSoonRentals.map((r) => (
+                                <button
+                                  key={r.rentalId}
+                                  onClick={() => {
+                                    setNotifMenuOpen(false);
+                                    setActiveTab('rental_status');
+                                  }}
+                                  className="w-full text-left px-4 py-2.5 hover:bg-slate-50 flex items-start gap-2.5 border-b border-slate-50 cursor-pointer"
+                                >
+                                  <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-[11px] font-bold text-slate-800 truncate">{r.sampleName}</div>
+                                    <div className="text-[10px] text-slate-400 truncate">{r.borrowerName} · {r.sampleCode}</div>
+                                    <div className="text-[10px] font-bold text-amber-600 mt-0.5">반납임박 · 반납예정 {r.dueDate}</div>
+                                  </div>
+                                </button>
+                              ))}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
-                <button
-                  onClick={() => {
-                    if (confirm('로그아웃 하시겠습니까?')) {
-                      handleLogout();
-                    }
-                  }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-                  title="로그아웃"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span className="font-semibold hidden sm:inline">로그아웃</span>
-                </button>
-              </div>
+
+                <div className="relative ml-1">
+                  <button
+                    onClick={() => setUserMenuOpen((o) => !o)}
+                    className="flex items-center gap-2 py-1.5 pl-1.5 pr-2.5 rounded-full hover:bg-slate-100 transition-colors cursor-pointer"
+                    id="header-user-menu-btn"
+                  >
+                    <div className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center shrink-0">
+                      <User className="w-4 h-4" />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700 hidden sm:block">{currentUser.name}</span>
+                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${userMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {userMenuOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setUserMenuOpen(false)} />
+                      <div className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-lg py-1.5 z-50" id="header-user-dropdown">
+                        <div className="px-3.5 py-2.5 border-b border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            <span className="text-xs font-bold text-slate-800 truncate">{currentUser.name}</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 truncate mt-1 pl-5.5">{currentUser.groupName}</div>
+                          <div className="text-[10px] text-slate-400 truncate pl-5.5">{currentUser.email}</div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setUserMenuOpen(false);
+                            if (confirm('로그아웃 하시겠습니까?')) handleLogout();
+                          }}
+                          className="w-full text-left px-3.5 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+                        >
+                          <LogOut className="w-3.5 h-3.5 text-slate-400" />
+                          로그아웃
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </>
             )}
           </header>
 
@@ -330,22 +526,20 @@ export default function App() {
                       rentals={rentals}
                       members={members}
                       onNavigateToSamples={() => setActiveTab('samples')}
-                      onNavigateToRentals={() => setActiveTab('rentals')}
+                      onNavigateToRentals={() => setActiveTab('rental_status')}
                       onRefreshData={handleFetchAllData}
                     />
                   </div>
                 )}
 
-                {activeTab === 'statistics' && (
-                  <div id="statistics-subview-frame">
-                    <DashboardView
+                {activeTab === 'categories' && (
+                  <div id="categories-subview-frame">
+                    <CategoryManagerView
+                      categories={categories}
                       samples={samples}
-                      rentals={rentals}
-                      members={members}
-                      onNavigateToSamples={() => setActiveTab('samples')}
-                      onNavigateToRentals={() => setActiveTab('rentals')}
-                      showOnlyCharts={true}
-                      onRefreshData={handleFetchAllData}
+                      onSave={(newCategories, newSamples) =>
+                        handleSaveDB(newSamples || samples, members, groups, rentals, newCategories)
+                      }
                     />
                   </div>
                 )}
@@ -357,6 +551,7 @@ export default function App() {
                       onSaveDB={(newSamples) => handleSaveDB(newSamples)}
                       forceTab="bulk-images"
                       rentals={rentals}
+                      categories={categories}
                     />
                   </div>
                 )}
@@ -368,17 +563,20 @@ export default function App() {
                       onSaveDB={(newSamples) => handleSaveDB(newSamples)}
                       forceTab="list"
                       rentals={rentals}
+                      categories={categories}
                     />
                   </div>
                 )}
 
-                {activeTab === 'rentals' && (
+                {(activeTab === 'rental_scan' || activeTab === 'rental_status') && (
                   <div id="rentals-subview-frame">
                     <RentalManagerView
                       rentals={rentals}
                       samples={samples}
                       members={members}
                       onSaveDB={(newRentals, newSamples) => handleSaveDB(newSamples, members, groups, newRentals)}
+                      onRefreshData={handleSilentRefresh}
+                      view={activeTab === 'rental_scan' ? 'scan' : 'status'}
                     />
                   </div>
                 )}
