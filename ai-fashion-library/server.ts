@@ -22,9 +22,16 @@ const DATA_DIR = process.env.DATA_DIR || process.cwd();
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 const SEED_FILE = path.join(process.cwd(), 'database.json');
 
+// 인증 방식 두 가지를 모두 지원한다.
+//  1) 정적 토큰: BLOB_READ_WRITE_TOKEN (스토어를 직접 만들 때 주입되거나 수동 설정)
+//  2) OIDC: 프로젝트에 스토어를 "Connect" 하면 BLOB_STORE_ID + VERCEL_OIDC_TOKEN 이
+//     자동 주입되고, SDK가 토큰 없이도 자동 인증한다. (현재 csb 프로젝트가 이 방식)
 const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
-const USE_BLOB = !!BLOB_TOKEN;
+const USE_BLOB = !!(BLOB_TOKEN || process.env.BLOB_STORE_ID);
 const BLOB_KEY = 'database.json';
+
+// 정적 토큰이 있을 때만 token 을 넘기고, 없으면 SDK 가 OIDC 로 인증하도록 비워 둔다.
+const blobAuth = BLOB_TOKEN ? { token: BLOB_TOKEN } : {};
 
 const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], categories: [] };
 
@@ -71,7 +78,7 @@ function saveLocalDB(data: any): boolean {
 
 // --- Vercel Blob 스토어 ---------------------------------------------------
 async function getBlobDB(): Promise<any> {
-  const { blobs } = await list({ prefix: BLOB_KEY, token: BLOB_TOKEN });
+  const { blobs } = await list({ prefix: BLOB_KEY, ...blobAuth });
   const found = blobs.find((b) => b.pathname === BLOB_KEY) || blobs[0];
   // Blob 이 비어있으면(최초 배포) 번들된 database.json 으로 시드한다.
   if (!found) {
@@ -89,11 +96,11 @@ async function getBlobDB(): Promise<any> {
 async function saveBlobDB(data: any): Promise<boolean> {
   await put(BLOB_KEY, JSON.stringify(data), {
     access: 'public',
-    token: BLOB_TOKEN,
     addRandomSuffix: false,
     allowOverwrite: true,
     contentType: 'application/json',
     cacheControlMaxAge: 0,
+    ...blobAuth,
   });
   return true;
 }
