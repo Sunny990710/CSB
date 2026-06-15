@@ -151,8 +151,8 @@ app.get('/api/health', (_req, res) => {
 });
 
 // 임시 진단용: 어떤 저장 모드/환경으로 떠 있는지 확인 (확인 후 제거 예정)
-app.get('/api/_debug', (_req, res) => {
-  res.json({
+app.get('/api/_debug', async (req, res) => {
+  const info: any = {
     useBlob: USE_BLOB,
     hasBlobToken: !!process.env.BLOB_READ_WRITE_TOKEN,
     hasBlobStoreId: !!process.env.BLOB_STORE_ID,
@@ -160,7 +160,26 @@ app.get('/api/_debug', (_req, res) => {
     commit: process.env.VERCEL_GIT_COMMIT_SHA || null,
     cwd: process.cwd(),
     seedExists: fs.existsSync(SEED_FILE),
-  });
+  };
+  if (req.query.test === 'write') {
+    try {
+      await saveBlobDB({ ...EMPTY_DB, _probe: Date.now() });
+      info.writeOk = true;
+    } catch (e: any) {
+      info.writeOk = false;
+      info.writeErr = String(e?.message || e);
+      info.writeStack = String(e?.stack || '').split('\n').slice(0, 4);
+    }
+  }
+  if (req.query.test === 'read') {
+    try {
+      const { blobs } = await list({ prefix: BLOB_KEY, ...blobAuth });
+      info.blobList = blobs.map((b) => ({ pathname: b.pathname, size: b.size, url: b.url }));
+    } catch (e: any) {
+      info.readErr = String(e?.message || e);
+    }
+  }
+  res.json(info);
 });
 
 app.get('/api/db', async (_req, res) => {
