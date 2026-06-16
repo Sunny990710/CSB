@@ -33,7 +33,7 @@ const BLOB_KEY = 'database.json';
 // 정적 토큰이 있을 때만 token 을 넘기고, 없으면 SDK 가 OIDC 로 인증하도록 비워 둔다.
 const blobAuth = BLOB_TOKEN ? { token: BLOB_TOKEN } : {};
 
-const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], categories: [], brands: [] };
+const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], categories: [], brands: [], contents: [] };
 
 // 번들/로컬에 포함된 database.json 을 초기 시드 데이터로 읽는다.
 function readSeed(): any {

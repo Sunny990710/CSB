@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
-  Search, Plus, Trash2, Check, Tags, Package, RotateCcw, Save, AlertCircle,
-  ChevronRight, ChevronDown, FolderTree, List, CornerDownRight, X, GripVertical, CornerLeftUp,
+  Search, Plus, Trash2, Check, Tags, Package, Save, AlertCircle,
+  ChevronRight, Minus, CornerDownRight, X, GripVertical, CornerLeftUp, Pencil,
 } from 'lucide-react';
 import { Category, Sample } from '../types';
 
@@ -27,13 +27,13 @@ const blankForm = (parentId: string = ROOT): FormState => ({
 });
 
 export default function CategoryManagerView({ categories, samples, onSave }: CategoryManagerViewProps) {
-  const [tab, setTab] = useState<'tree' | 'summary'>('tree');
   const [searchQuery, setSearchQuery] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(blankForm());
   const [error, setError] = useState('');
   const [flashId, setFlashId] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
 
   // Drag & drop (트리 내 카테고리 이동)
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -85,6 +85,18 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
     return out;
   };
 
+  // 선택(펼친)된 카테고리 자신과 그 상위(조상) id 집합 — 볼드체로 강조
+  const ancestorIds = useMemo(() => {
+    const set = new Set<string>();
+    if (!selectedId) return set;
+    let cur = byId.get(selectedId);
+    while (cur) {
+      set.add(cur.id);
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    return set;
+  }, [selectedId, byId]);
+
   // Path (breadcrumb) for a node id
   const pathOf = (id: string | null): Category[] => {
     const out: Category[] = [];
@@ -117,9 +129,21 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
   // --- Actions ----------------------------------------------------------
   const toggleExpand = (id: string) => {
     setExpanded((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
+      // 이미 열려 있으면: 자신과 하위 모두 접기
+      if (prev.has(id)) {
+        const next = new Set(prev);
+        next.delete(id);
+        descendantIds(id).forEach((d) => next.delete(d));
+        return next;
+      }
+      // 새로 열 때: 해당 노드의 경로(조상+자신)만 펼치고 나머지는 접는다 (아코디언)
+      const open = new Set<string>();
+      let cur: Category | undefined = byId.get(id);
+      while (cur) {
+        open.add(cur.id);
+        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+      }
+      return open;
     });
   };
 
@@ -148,10 +172,22 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
     return () => clearTimeout(t);
   }, [flashId]);
 
+  const resetForm = () => {
+    setSelectedId(null);
+    setForm(blankForm(ROOT));
+    setError('');
+  };
+
+  const closeModal = () => {
+    setModalOpen(false);
+    setError('');
+  };
+
   const startNewRoot = () => {
     setSelectedId(null);
     setForm(blankForm(ROOT));
     setError('');
+    setModalOpen(true);
   };
 
   const startNewChild = (parentId: string) => {
@@ -159,16 +195,20 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
     setForm(blankForm(parentId));
     setError('');
     setExpanded((prev) => new Set(prev).add(parentId));
+    setModalOpen(true);
   };
 
   const selectCategory = (cat: Category) => {
     setSelectedId(cat.id);
     setForm({ id: cat.id, code: cat.code, name: cat.name, useYn: cat.useYn, parentId: norm(cat.parentId) });
     setError('');
-    // 하위가 있으면 클릭 시 자연스럽게 펼쳐 보여준다
-    if (childrenOf(cat.id).length > 0) {
-      setExpanded((prev) => new Set(prev).add(cat.id));
-    }
+    setModalOpen(true);
+  };
+
+  // 트리에서 노드 선택 + 펼침/접힘 토글 (편집 모달 없이)
+  const handleRowClick = (cat: Category) => {
+    setSelectedId(cat.id);
+    if (childrenOf(cat.id).length > 0) toggleExpand(cat.id);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -198,17 +238,19 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
       }
       onSave(updated, updatedSamples);
       if (form.parentId) expandAncestors(form.parentId);
+      setSelectedId(form.id);
       setFlashId(form.id);
+      closeModal();
     } else {
       if (categories.some((c) => c.code.toUpperCase() === code))
         return setError('이미 사용 중인 카테고리 코드입니다.');
       const newCat: Category = { id: code, code, name, useYn: form.useYn, parentId: form.parentId || null };
       onSave([...categories, newCat]);
-      // 상위를 펼쳐 새 하위 노드가 바로 보이도록 하고, 선택 상태로 전환
+      // 상위를 펼쳐 새 노드가 바로 보이도록 하고, 잠깐 강조
       if (form.parentId) expandAncestors(form.parentId);
       setSelectedId(newCat.id);
-      setForm({ id: newCat.id, code, name, useYn: form.useYn, parentId: form.parentId });
       setFlashId(newCat.id);
+      closeModal();
     }
   };
 
@@ -229,7 +271,8 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
     }
     const removeIds = new Set([target.id, ...descs]);
     onSave(categories.filter((c) => !removeIds.has(c.id)));
-    startNewRoot();
+    resetForm();
+    closeModal();
   };
 
   // 드롭 대상이 유효한지(자기 자신/하위로는 이동 불가)
@@ -261,19 +304,46 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
     setDragOverRoot(false);
   };
 
-  // Parent options for the form (exclude self + descendants)
-  const parentOptions = useMemo(() => {
+  // 상위 카테고리 선택 시 제외할 id (자기 자신 + 하위)
+  const blockedParentIds = useMemo(() => {
     const blocked = new Set<string>();
     if (isEditing && form.id) {
       blocked.add(form.id);
       descendantIds(form.id).forEach((id) => blocked.add(id));
     }
-    return categories
-      .filter((c) => !blocked.has(c.id))
-      .map((c) => ({ id: c.id, label: pathOf(c.id).map((p) => p.name).join(' > ') }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+    return blocked;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categories, form.id, isEditing]);
+
+  // 단계별(캐스케이딩) 상위 카테고리 선택 — 각 단계의 선택지/현재값 계산
+  const parentLevels = useMemo(() => {
+    const path = form.parentId ? pathOf(form.parentId) : [];
+    const levels: { options: Category[]; value: string }[] = [];
+    levels.push({ options: childrenOf(ROOT), value: path[0]?.id ?? '' });
+    for (let i = 0; i < path.length; i++) {
+      const kids = childrenOf(path[i].id);
+      if (kids.length > 0) {
+        levels.push({ options: kids, value: path[i + 1]?.id ?? '' });
+      }
+    }
+    return levels;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.parentId, categories]);
+
+  // 특정 단계에서 값이 바뀌면 그 노드를 상위로 지정(빈 값이면 이전 단계 노드/최상위로)
+  const handleParentLevelChange = (levelIdx: number, value: string) => {
+    if (value) {
+      setForm((p) => ({ ...p, parentId: value }));
+      return;
+    }
+    if (levelIdx === 0) {
+      setForm((p) => ({ ...p, parentId: '' }));
+      return;
+    }
+    const path = form.parentId ? pathOf(form.parentId) : [];
+    const prev = path[levelIdx - 1];
+    setForm((p) => ({ ...p, parentId: prev ? prev.id : '' }));
+  };
 
   // --- Tree rendering ---------------------------------------------------
   const renderNodes = (parentId: string, depth: number): React.ReactNode => {
@@ -294,11 +364,20 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
             draggable
             onDragStart={(e) => {
               e.stopPropagation();
-              setDraggingId(cat.id);
               e.dataTransfer.effectAllowed = 'move';
               try { e.dataTransfer.setData('text/plain', cat.id); } catch { /* noop */ }
+              // 드래그 시작 직후 DOM이 바뀌면(상단 드롭존 삽입 등) 브라우저가 드래그를
+              // 취소할 수 있으므로 상태 변경을 다음 프레임으로 미룬다.
+              const id = cat.id;
+              requestAnimationFrame(() => setDraggingId(id));
             }}
             onDragEnd={clearDrag}
+            onDragEnter={(e) => {
+              if (!canDropOn(draggingId, cat.id)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              if (dragOverId !== cat.id) setDragOverId(cat.id);
+            }}
             onDragOver={(e) => {
               if (!canDropOn(draggingId, cat.id)) return;
               e.preventDefault();
@@ -313,7 +392,7 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
               if (draggingId) moveCategory(draggingId, cat.id);
               clearDrag();
             }}
-            className={`group flex items-center gap-1 rounded-lg pr-2 transition-colors cursor-pointer ${
+            className={`group flex items-center gap-1 rounded-lg pr-2 transition-colors cursor-pointer select-none ${
               isDragging ? 'opacity-40' : ''
             } ${
               isDragTarget
@@ -323,21 +402,26 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
                   : active ? 'bg-indigo-50' : 'hover:bg-slate-50'
             }`}
             style={{ paddingLeft: `${depth * 18 + 4}px` }}
-            onClick={() => selectCategory(cat)}
+            onClick={() => handleRowClick(cat)}
           >
             <GripVertical className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-400 shrink-0 cursor-grab active:cursor-grabbing" />
 
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); if (hasKids) toggleExpand(cat.id); }}
-              className={`p-1 rounded shrink-0 ${hasKids ? 'text-slate-400 hover:text-slate-700 hover:bg-slate-200/60' : 'text-transparent cursor-default'}`}
+              onClick={(e) => { e.stopPropagation(); setSelectedId(cat.id); if (hasKids) toggleExpand(cat.id); }}
+              className={`shrink-0 w-4 h-4 flex items-center justify-center rounded-[3px] border transition-colors ${
+                hasKids
+                  ? 'border-slate-300 text-slate-500 hover:bg-slate-100 hover:border-slate-400 cursor-pointer'
+                  : 'border-transparent text-transparent cursor-default'
+              }`}
               tabIndex={-1}
+              title={hasKids ? (isOpen ? '접기' : '펼치기') : undefined}
             >
-              {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              {hasKids && (isOpen ? <Minus className="w-2.5 h-2.5" /> : <Plus className="w-2.5 h-2.5" />)}
             </button>
 
             <div className="flex items-center gap-2 min-w-0 flex-1 py-1.5">
-              <span className={`font-bold text-sm truncate ${disabled ? 'text-rose-400 line-through' : active ? 'text-indigo-800' : 'text-slate-700'}`}>
+              <span className={`text-sm truncate ${depth === 0 || ancestorIds.has(cat.id) ? 'font-bold' : 'font-normal'} ${disabled ? 'text-rose-400 line-through' : active ? 'text-indigo-800' : 'text-slate-700'}`}>
                 {cat.name}
               </span>
               <span className="font-mono text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded shrink-0">{cat.code}</span>
@@ -350,11 +434,20 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
 
             <button
               type="button"
+              onClick={(e) => { e.stopPropagation(); selectCategory(cat); }}
+              className="p-1 rounded text-slate-300 hover:text-blue-600 hover:bg-blue-50 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity"
+              title="카테고리 편집"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
               onClick={(e) => { e.stopPropagation(); startNewChild(cat.id); }}
-              className="p-1 rounded text-slate-300 hover:text-indigo-600 hover:bg-indigo-50 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              className="flex items-center gap-0.5 px-1.5 py-1 rounded text-[11px] font-semibold text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity"
               title="하위 카테고리 추가"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Plus className="w-3.5 h-3.5" /> 하위
             </button>
           </div>
 
@@ -369,32 +462,9 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
 
   return (
     <div className="space-y-6" id="category-manager-root">
-      {/* Tabs */}
-      <div className="flex border-b border-slate-200">
-        <button
-          onClick={() => setTab('tree')}
-          className={`py-3.5 px-6 font-semibold text-xs flex items-center gap-2 border-b-2 font-sans relative transition-all ${
-            tab === 'tree' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <FolderTree className="w-4 h-4" />
-          <span>트리 관리</span>
-        </button>
-        <button
-          onClick={() => setTab('summary')}
-          className={`py-3.5 px-6 font-semibold text-xs flex items-center gap-2 border-b-2 font-sans relative transition-all ${
-            tab === 'summary' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <List className="w-4 h-4" />
-          <span>보유현황 요약</span>
-        </button>
-      </div>
-
-      {tab === 'tree' ? (
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-          {/* Left: tree */}
-          <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col">
+      <div>
+          {/* 트리 */}
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col">
             <div className="p-3 border-b border-slate-100 flex flex-col sm:flex-row gap-2 sm:items-center">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
@@ -453,19 +523,18 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
               )}
             </div>
           </div>
+        </div>
 
-          {/* Right: editor */}
-          <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden h-fit">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-2">
+      {/* ===== 카테고리 추가/수정 모달 ===== */}
+      {modalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl max-w-md w-full border border-slate-100 shadow-2xl overflow-hidden">
+            <div className="flex justify-between items-center border-b border-slate-100 px-5 py-4">
+              <h4 className="font-extrabold text-slate-800 text-sm flex items-center gap-2">
                 <Tags className="w-4 h-4 text-indigo-500" />
                 {isEditing ? '카테고리 수정' : '새 카테고리'}
-              </h3>
-              {isEditing && (
-                <button onClick={startNewRoot} className="text-[11px] text-slate-400 hover:text-slate-700 font-semibold flex items-center gap-1 cursor-pointer">
-                  <RotateCcw className="w-3 h-3" />초기화
-                </button>
-              )}
+              </h4>
+              <button onClick={closeModal} className="text-slate-400 hover:text-slate-600 cursor-pointer"><X className="w-4 h-4" /></button>
             </div>
 
             {breadcrumb.length > 0 && (
@@ -493,22 +562,35 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
 
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-slate-600">상위 카테고리</label>
-                <select
-                  value={form.parentId}
-                  onChange={(e) => setForm((p) => ({ ...p, parentId: e.target.value }))}
-                  className="w-full p-2.5 border border-slate-200 bg-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                >
-                  <option value="">— 최상위 —</option>
-                  {parentOptions.map((o) => (
-                    <option key={o.id} value={o.id}>{o.label}</option>
+                <div className="space-y-2">
+                  {parentLevels.map((lvl, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span className="shrink-0 text-[10px] font-bold text-slate-400 w-9">{idx + 1}단계</span>
+                      <select
+                        value={lvl.value}
+                        onChange={(e) => handleParentLevelChange(idx, e.target.value)}
+                        className="flex-1 p-2.5 border border-slate-200 bg-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                      >
+                        <option value="">{idx === 0 ? '— 최상위 —' : '— 선택 안 함 —'}</option>
+                        {lvl.options
+                          .filter((o) => !blockedParentIds.has(o.id))
+                          .map((o) => (
+                            <option key={o.id} value={o.id}>{o.name}</option>
+                          ))}
+                      </select>
+                    </div>
                   ))}
-                </select>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  선택한 위치: {form.parentId ? pathOf(form.parentId).map((p) => p.name).join(' > ') : '최상위'}
+                </p>
               </div>
 
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-1.5 col-span-1">
                   <label className="text-xs font-bold text-slate-600">코드 <span className="text-rose-500">*</span></label>
                   <input
+                    autoFocus={!isEditing}
                     type="text"
                     value={form.code}
                     onChange={(e) => setForm((p) => ({ ...p, code: e.target.value }))}
@@ -565,63 +647,6 @@ export default function CategoryManagerView({ categories, samples, onSave }: Cat
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      ) : (
-        /* ===== 보유현황 요약 ===== */
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse">
-              <thead>
-                <tr className="bg-slate-800 text-white text-xs font-bold">
-                  <th className="py-3 px-5 text-left w-44">카테고리</th>
-                  <th className="py-3 px-5 text-left">보유현황</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {rootNodes.length === 0 ? (
-                  <tr><td colSpan={2} className="py-16 text-center text-slate-400 text-xs">등록된 카테고리가 없습니다.</td></tr>
-                ) : (
-                  rootNodes.map((root) => {
-                    const kids = childrenOf(root.id);
-                    const total = rollupCount.get(root.id) ?? 0;
-                    return (
-                      <tr key={root.id} className="hover:bg-slate-50/60">
-                        <td className="py-3.5 px-5 align-top">
-                          <button
-                            onClick={() => { setTab('tree'); selectCategory(root); }}
-                            className="font-bold text-slate-800 hover:text-indigo-600 text-sm cursor-pointer text-left"
-                          >
-                            {root.name}
-                          </button>
-                          <div className="text-[10px] text-slate-400 font-mono mt-0.5">합계 {total.toLocaleString()}</div>
-                        </td>
-                        <td className="py-3.5 px-5">
-                          {kids.length === 0 ? (
-                            <span className="text-xs text-slate-500 font-semibold">{root.name} {directCount(root.name).toLocaleString()}</span>
-                          ) : (
-                            <div className="flex flex-wrap gap-x-3 gap-y-1.5 items-center text-xs">
-                              {kids.map((k, i) => (
-                                <span key={k.id} className="flex items-center gap-1">
-                                  {i > 0 && <span className="text-slate-200">|</span>}
-                                  <button
-                                    onClick={() => { setTab('tree'); selectCategory(k); }}
-                                    className={`font-bold hover:text-indigo-600 cursor-pointer ${k.useYn === '미사용' ? 'text-rose-300 line-through' : 'text-slate-700'}`}
-                                  >
-                                    {k.name}
-                                  </button>
-                                  <span className="text-slate-400 font-mono text-[11px]">{(rollupCount.get(k.id) ?? 0).toLocaleString()}</span>
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
           </div>
         </div>
       )}

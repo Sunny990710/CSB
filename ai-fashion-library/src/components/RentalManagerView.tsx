@@ -321,6 +321,16 @@ export default function RentalManagerView({
       o2: s?.overdueFee2 ?? 20000,
     };
   };
+  // 연체일 계산: 반납완료면 (반납일 - 반납예정일), 대여중이면 (오늘 - 반납예정일), 음수면 0
+  const overdueDaysOf = (r: Rental): number => {
+    if (!r.dueDate) return 0;
+    const due = new Date(r.dueDate.replace(' ', 'T'));
+    const end = r.returnDate ? new Date(r.returnDate.replace(' ', 'T')) : new Date();
+    const dueDay = Date.UTC(due.getFullYear(), due.getMonth(), due.getDate());
+    const endDay = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+    const diff = Math.floor((endDay - dueDay) / 86400000);
+    return diff > 0 ? diff : 0;
+  };
   const detailRows = detailView
     ? rentals.filter(
         (r) =>
@@ -908,7 +918,7 @@ export default function RentalManagerView({
       {/* ============ 대여자별 보기 모달 (대여중 / 반납 목록) ============ */}
       {detailView && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto" onClick={() => setDetailView(null)}>
-          <div className="bg-white rounded-xl max-w-3xl w-full border border-slate-100 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-xl max-w-5xl w-full border border-slate-100 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
             <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
               <div className="space-y-0.5">
                 <h4 className="text-xs font-bold font-mono tracking-wider text-indigo-300 uppercase">
@@ -933,19 +943,21 @@ export default function RentalManagerView({
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-100 text-[10.5px] font-bold text-slate-500 uppercase tracking-wider sticky top-0">
                     <th className="py-2.5 px-3 whitespace-nowrap">대여번호</th>
-                    <th className="py-2.5 px-3 whitespace-nowrap">상품</th>
+                    <th className="py-2.5 px-3 whitespace-nowrap">상품명</th>
+                    <th className="py-2.5 px-3 whitespace-nowrap">상품코드</th>
                     <th className="py-2.5 px-3 whitespace-nowrap">대여일</th>
                     <th className="py-2.5 px-3 whitespace-nowrap">{detailView.mode === 'active' ? '반납예정일' : '반납일'}</th>
                     <th className="py-2.5 px-3 whitespace-nowrap text-right">대여비용</th>
                     <th className="py-2.5 px-3 whitespace-nowrap text-right">연체비용(1차)</th>
                     <th className="py-2.5 px-3 whitespace-nowrap text-right">연체비용(2차)</th>
-                    {detailView.mode === 'active' && <th className="py-2.5 px-3 whitespace-nowrap text-center">독촉</th>}
+                    <th className="py-2.5 px-3 whitespace-nowrap text-center">연체일</th>
+                    {detailView.mode === 'active' && <th className="py-2.5 px-3 whitespace-nowrap text-center">반납 요청</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
                   {detailRows.length === 0 ? (
                     <tr>
-                      <td colSpan={detailView.mode === 'active' ? 8 : 7} className="py-16 text-center text-slate-400">
+                      <td colSpan={detailView.mode === 'active' ? 10 : 9} className="py-16 text-center text-slate-400">
                         {detailView.mode === 'active' ? '현재 대여중인 상품이 없습니다.' : '반납한 상품이 없습니다.'}
                       </td>
                     </tr>
@@ -958,8 +970,8 @@ export default function RentalManagerView({
                           <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px] whitespace-nowrap">{r.rentalId}</td>
                           <td className="py-2.5 px-3">
                             <div className="font-semibold text-slate-800 max-w-[200px] truncate" title={r.sampleName}>{r.sampleName}</div>
-                            <div className="font-mono text-[10px] text-indigo-650">{r.sampleCode}</div>
                           </td>
+                          <td className="py-2.5 px-3 font-mono text-[11px] text-indigo-600 whitespace-nowrap">{r.sampleCode}</td>
                           <td className="py-2.5 px-3 font-mono text-slate-500 text-[11px] whitespace-nowrap">{r.rentDate}</td>
                           <td className="py-2.5 px-3 font-mono text-[11px] whitespace-nowrap">
                             {detailView.mode === 'active' ? (
@@ -971,6 +983,12 @@ export default function RentalManagerView({
                           <td className="py-2.5 px-3 font-mono text-slate-700 text-[11px] text-right whitespace-nowrap">{fee.rental.toLocaleString()}원</td>
                           <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px] text-right whitespace-nowrap">{fee.o1.toLocaleString()}원</td>
                           <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px] text-right whitespace-nowrap">{fee.o2.toLocaleString()}원</td>
+                          <td className="py-2.5 px-3 font-mono text-[11px] text-center whitespace-nowrap">
+                            {(() => {
+                              const od = overdueDaysOf(r);
+                              return od > 0 ? <span className="text-rose-600 font-bold">{od}일</span> : <span className="text-slate-300">-</span>;
+                            })()}
+                          </td>
                           {detailView.mode === 'active' && (
                             <td className="py-2.5 px-3 text-center whitespace-nowrap">
                               {rowOverdue ? (
@@ -979,14 +997,14 @@ export default function RentalManagerView({
                                     onClick={() => handleSendAutomatedEmail(r)}
                                     disabled={sendingId === r.rentalId}
                                     className="bg-rose-600 hover:bg-rose-700 active:scale-95 text-white py-1 px-2 rounded-lg font-bold text-[10px] flex items-center gap-1 cursor-pointer disabled:opacity-50 shrink-0"
-                                    title="AI 자동 독촉 메일"
+                                    title="반납 요청 메일 발송"
                                   >
                                     {sendingId === r.rentalId ? (
                                       <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
                                     ) : (
                                       <Sparkles className="w-3 h-3 shrink-0" />
                                     )}
-                                    AI 독촉
+                                    메일 발송
                                   </button>
                                   {r.notifyCount > 0 && (
                                     <button

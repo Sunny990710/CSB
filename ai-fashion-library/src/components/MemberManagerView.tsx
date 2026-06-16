@@ -31,19 +31,16 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
   const [filterAffiliation, setFilterAffiliation] = useState('전체');
   const [filterRole, setFilterRole] = useState('전체');
   const [filterCategory, setFilterCategory] = useState('전체');
-  const [filterBrand, setFilterBrand] = useState('전체');
   const [isMemberFormOpen, setIsMemberFormOpen] = useState(false);
   const [editingMember, setEditingMember] = useState<Member | null>(null);
   const [newMember, setNewMember] = useState<Partial<Member>>(blankMember());
 
   const uniqueAffiliations = ['전체', ...Array.from(new Set(members.map((m) => m.affiliation || m.groupName).filter(Boolean)))];
-  const uniqueBrands = ['전체', ...Array.from(new Set(members.map((m) => m.brand).filter(Boolean)))];
 
   const resetFilters = () => {
     setFilterAffiliation('전체');
     setFilterRole('전체');
     setFilterCategory('전체');
-    setFilterBrand('전체');
     setSearchQuery('');
   };
 
@@ -61,8 +58,7 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
     const matchAffiliation = filterAffiliation === '전체' || (m.affiliation || m.groupName) === filterAffiliation;
     const matchRole = filterRole === '전체' || (m.role || '일반사용자') === filterRole;
     const matchCategory = filterCategory === '전체' || (m.category || '한국') === filterCategory;
-    const matchBrand = filterBrand === '전체' || m.brand === filterBrand;
-    return matchQ && matchAffiliation && matchRole && matchCategory && matchBrand;
+    return matchQ && matchAffiliation && matchRole && matchCategory;
   });
 
   const handleAddMember = (e: React.FormEvent) => {
@@ -188,20 +184,6 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
                 <option value="전체">카테고리: 전체</option>
                 {MEMBER_CATEGORIES.map((c) => (
                   <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-            </div>
-
-            <div className="relative shrink-0">
-              <select
-                value={filterBrand}
-                onChange={(e) => setFilterBrand(e.target.value)}
-                className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-              >
-                <option value="전체">브랜드: 전체</option>
-                {uniqueBrands.filter((b) => b !== '전체').map((b) => (
-                  <option key={b} value={b}>{b}</option>
                 ))}
               </select>
               <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
@@ -369,14 +351,16 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
               </div>
 
               <div className="space-y-1">
-                <label className="font-bold text-slate-600 block">전화번호</label>
-                <input
-                  type="text"
-                  placeholder="010-0000-0000"
-                  className="w-full p-2 border border-slate-200 bg-slate-50 rounded-lg"
-                  value={newMember.phone}
-                  onChange={(e) => setNewMember((prev) => ({ ...prev, phone: e.target.value }))}
-                />
+                <label className="font-bold text-slate-600 block">카테고리</label>
+                <select
+                  className="w-full p-2 border border-slate-200 bg-white rounded-lg font-bold text-slate-800"
+                  value={newMember.category}
+                  onChange={(e) => setNewMember((prev) => ({ ...prev, category: e.target.value }))}
+                >
+                  {MEMBER_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
               </div>
 
               <div className="space-y-1">
@@ -388,19 +372,6 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
                 >
                   {MEMBER_ROLES.map((r) => (
                     <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1 col-span-2">
-                <label className="font-bold text-slate-600 block">카테고리</label>
-                <select
-                  className="w-full p-2 border border-slate-200 bg-white rounded-lg font-bold text-slate-800"
-                  value={newMember.category}
-                  onChange={(e) => setNewMember((prev) => ({ ...prev, category: e.target.value }))}
-                >
-                  {MEMBER_CATEGORIES.map((c) => (
-                    <option key={c} value={c}>{c}</option>
                   ))}
                 </select>
               </div>

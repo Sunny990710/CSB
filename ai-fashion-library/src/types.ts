@@ -93,6 +93,22 @@ export interface Brand {
   useYn: 'Y' | 'N';
 }
 
+// 콘텐츠 저장소: 폴더/자료(도서, 연구자료 등) 트리 노드
+export interface ContentNode {
+  id: string;
+  name: string;
+  type: 'folder' | 'item';
+  parentId?: string | null;   // null/undefined = 최상위
+  itemType?: string;          // 자료 유형 (도서 / 연구자료 / 링크 / 문서 등)
+  author?: string;            // 저자/출처
+  url?: string;               // 외부 링크
+  fileData?: string;          // 업로드한 파일 (base64 data URL)
+  fileName?: string;          // 업로드한 파일의 원본 이름
+  fileType?: string;          // 업로드한 파일의 MIME 타입
+  description?: string;       // 설명
+  createdAt?: string;         // 등록일
+}
+
 export interface Rental {
   rentalId: string;
   sampleCode: string;

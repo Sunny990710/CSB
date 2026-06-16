@@ -3,7 +3,8 @@ import { motion } from 'motion/react';
 import { 
   Package, RefreshCw, AlertTriangle, Building, ThumbsDown, Calendar, 
   Search, ArrowRight, UserCheck, Send, Mail, Sparkles, History, 
-  User, Clock, MessageSquare, AlertCircle, Phone, ArrowUpRight, Check, CheckCircle2
+  User, Clock, MessageSquare, AlertCircle, Phone, ArrowUpRight, Check, CheckCircle2,
+  ArrowDownWideNarrow, ArrowUpNarrowWide
 } from 'lucide-react';
 import { Sample, Rental, Member } from '../types';
 
@@ -40,9 +41,18 @@ export default function DashboardView({
   // Local states for AI notification panel
   const [sendingId, setSendingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortDesc, setSortDesc] = useState(true); // 연체일 내림차순 기본
+  const [notifyFilter, setNotifyFilter] = useState<'all' | 'none' | 'sent'>('all');
+
+  // 기준일(시스템 표준일) 대비 연체 일수
+  const overdueDaysOf = (r: Rental) => {
+    const dueTime = new Date(r.dueDate).getTime();
+    const todayTime = new Date('2026-06-09').getTime();
+    return Math.ceil(Math.abs(todayTime - dueTime) / (1000 * 60 * 60 * 24));
+  };
 
   const handleSendAutomatedEmail = async (rental: Rental) => {
-    if (!confirm(`${rental.borrowerName} 님에게 즉시 자동 독촉 메일을 발송하시겠습니까?`)) return;
+    if (!confirm(`${rental.borrowerName} 님에게 반납 요청 메일을 발송하시겠습니까?`)) return;
     
     setSendingId(rental.rentalId);
     try {
@@ -78,7 +88,7 @@ export default function DashboardView({
       const sendData = await sendRes.json();
       
       if (sendData.success) {
-        alert(`${rental.borrowerName} 님에게 자동 독촉 메일이 성공적으로 전송되었습니다.`);
+        alert(`${rental.borrowerName} 님에게 반납 요청 메일이 성공적으로 전송되었습니다.`);
         if (onRefreshData) {
           onRefreshData();
         } else {
@@ -89,7 +99,7 @@ export default function DashboardView({
       }
     } catch (err) {
       console.error(err);
-      alert('자동 독촉 메일 전송 중 통신 오류가 발생했습니다.');
+      alert('반납 요청 메일 전송 중 통신 오류가 발생했습니다.');
     } finally {
       setSendingId(null);
     }
@@ -131,16 +141,24 @@ export default function DashboardView({
     return { day, count };
   });
 
-  const filteredOverdues = activeOverdues.filter((overdue) => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      overdue.sampleCode.toLowerCase().includes(query) ||
-      overdue.sampleName.toLowerCase().includes(query) ||
-      overdue.borrowerName.toLowerCase().includes(query) ||
-      overdue.borrowerGroup.toLowerCase().includes(query)
+  const filteredOverdues = activeOverdues
+    .filter((overdue) => {
+      // 발송 상태 필터
+      if (notifyFilter === 'none' && overdue.notifyCount > 0) return false;
+      if (notifyFilter === 'sent' && overdue.notifyCount === 0) return false;
+      // 검색어 필터
+      if (!searchQuery) return true;
+      const query = searchQuery.toLowerCase();
+      return (
+        overdue.sampleCode.toLowerCase().includes(query) ||
+        overdue.sampleName.toLowerCase().includes(query) ||
+        overdue.borrowerName.toLowerCase().includes(query) ||
+        overdue.borrowerGroup.toLowerCase().includes(query)
+      );
+    })
+    .sort((a, b) =>
+      sortDesc ? overdueDaysOf(b) - overdueDaysOf(a) : overdueDaysOf(a) - overdueDaysOf(b)
     );
-  });
 
   const handleReturnAction = (rentalId: string) => {
     if (!confirm('해당 샘플을 즉시 반납 완료 처리하시겠습니까?')) return;
@@ -339,29 +357,13 @@ export default function DashboardView({
 
   return (
     <div className="space-y-6" id="dashboard-container">
-      {/* Upper Welcomer Header Banner */}
-      <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center relative overflow-hidden" id="dashboard-hero">
-        <div className="absolute right-0 top-0 w-1/3 h-full bg-linear-to-l from-indigo-500/10 to-transparent pointer-events-none" />
-        <div className="space-y-2 z-10">
-          <span className="text-xs bg-indigo-500/20 text-indigo-300 font-mono py-1 px-2.5 rounded-full uppercase tracking-wider font-semibold">Workspace Live</span>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-100">디자인 의류 샘플 통합 워크스페이스</h1>
-          <p className="text-sm text-slate-400">
-            실시간 대여 현황 및 자동 연체 이메일 독촉 에이전트를 한 곳에서 관리하는 패션 자산 플랫폼입니다.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 mt-4 md:mt-0 font-mono text-xs text-slate-400 bg-slate-850 py-2 px-4 rounded-xl border border-slate-800" id="current-time-hud">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span>SERVER LOCALTIME: 2026-06-09</span>
-        </div>
-      </div>
-
       {/* Numerical Quick KPI Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-4" id="kpi-grid">
         {[
           { id: 'kpi-all', label: '전체 샘플', val: totalSamples, icon: Package, color: 'text-slate-600 bg-slate-100', link: 'samples' },
           { id: 'kpi-avail', label: '대여 가능', val: availableCount, icon: UserCheck, color: 'text-emerald-600 bg-emerald-50', link: 'samples' },
           { id: 'kpi-loan', label: '대여중', val: onLoanCount, icon: RefreshCw, color: 'text-blue-600 bg-blue-50', link: 'rentals' },
-          { id: 'kpi-overdue', label: '연체자 수', val: overdueCount, icon: AlertTriangle, color: 'text-rose-600 bg-rose-50 border border-rose-100', highlight: true, link: 'rentals' },
+          { id: 'kpi-overdue', label: '연체중', val: overdueCount, icon: AlertTriangle, color: 'text-rose-600 bg-rose-50 border border-rose-100', highlight: true, link: 'rentals' },
           { id: 'kpi-bupyeong', label: '부평보관', val: bupyeongCount, icon: Building, color: 'text-amber-600 bg-amber-50', link: 'samples' },
           { id: 'kpi-lost', label: '분실 상태', val: lostCount, icon: ThumbsDown, color: 'text-slate-500 bg-slate-150', link: 'samples' },
         ].map((kpi, idx) => {
@@ -400,33 +402,70 @@ export default function DashboardView({
         <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between overflow-hidden lg:h-[600px]" id="dashboard-overdue-list-panel">
           
           {/* Header Area */}
-          <div className="p-5 border-b border-rose-100/60 bg-gradient-to-r from-rose-50/20 to-transparent flex flex-col sm:flex-row gap-4 justify-between sm:items-center">
-            <div className="flex items-center gap-3">
-              <span className="flex h-2.5 w-2.5 relative">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-600"></span>
-              </span>
-              <div>
-                <h3 className="text-sm font-extrabold text-slate-800 tracking-tight flex items-center gap-2">
-                  실시간 미반납·연체 자산 모니터링 제어센터
-                  <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono">
-                    {activeOverdues.length}명 대기중
-                  </span>
-                </h3>
-                <p className="text-[11px] text-slate-400 font-medium">실시간 연체 일수 판정 및 AI 다차원 독촉 이메일 템플릿 직송 시스템</p>
+          <div className="p-5 border-b border-rose-100/60 bg-gradient-to-r from-rose-50/20 to-transparent space-y-3">
+            <div className="flex flex-col sm:flex-row gap-4 justify-between sm:items-center">
+              <div className="flex items-center gap-3">
+                <span className="flex h-2.5 w-2.5 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-600"></span>
+                </span>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-800 tracking-tight flex items-center gap-2">
+                    미반납·연체 샘플 관리
+                    <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono">
+                      {activeOverdues.length}명 대기중
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 font-medium">연체 일수를 확인하고 반납 요청 메일을 보낼 수 있어요.</p>
+                </div>
+              </div>
+
+              {/* Quick search input */}
+              <div className="relative w-full sm:w-60">
+                <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="연체자명, 부서, 상품코드 검색..."
+                  className="w-full pl-8 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-rose-500/30 font-sans"
+                />
               </div>
             </div>
 
-            {/* Quick search input */}
-            <div className="relative w-full sm:w-60">
-              <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-slate-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="연체자명, 부서, 상품코드 검색..."
-                className="w-full pl-8 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-rose-500/30 font-sans"
-              />
+            {/* Filters & Sort */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-bold text-slate-400">발송 상태</span>
+              {([
+                { id: 'all', label: '전체' },
+                { id: 'none', label: '미발송' },
+                { id: 'sent', label: '발송완료' },
+              ] as const).map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setNotifyFilter(f.id)}
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold border transition-colors cursor-pointer ${
+                    notifyFilter === f.id
+                      ? 'bg-rose-600 text-white border-rose-600'
+                      : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+
+              <span className="mx-1 h-3.5 w-px bg-slate-200" />
+
+              <button
+                onClick={() => setSortDesc((p) => !p)}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+                title="연체일 정렬 전환"
+              >
+                {sortDesc ? <ArrowDownWideNarrow className="w-3.5 h-3.5" /> : <ArrowUpNarrowWide className="w-3.5 h-3.5" />}
+                연체일 {sortDesc ? '내림차순' : '오름차순'}
+              </button>
+
+              <span className="ml-auto text-[11px] font-mono text-slate-400">{filteredOverdues.length}건</span>
             </div>
           </div>
 
@@ -474,9 +513,6 @@ export default function DashboardView({
                             <Package className="w-6 h-6 text-indigo-400" />
                           </div>
                         )}
-                        <span className="absolute bottom-0 right-0 bg-slate-900/70 text-[7px] text-white px-1 py-0.2 rounded font-mono font-bold scale-90">
-                          {sample?.category || '의류'}
-                        </span>
                       </div>
 
                       {/* Main Garment Metadata (Clean layout, removed redundant dates) */}
@@ -506,28 +542,7 @@ export default function DashboardView({
                     </div>
 
                     {/* Notification Stats + Triggers */}
-                    <div className="flex items-center gap-3 w-full md:w-auto justify-end shrink-0 border-t border-slate-50 md:border-0 pt-3 md:pt-0">
-                      
-                      {/* Notice Dispatch Status Indicators */}
-                      <div className="text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          {hasNotifiedBefore ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-150 py-0.5 px-2 rounded-full font-mono">
-                              <History className="w-2.5 h-2.5 animate-pulse text-indigo-500" />
-                              {overdue.notifyCount}차 발송완료
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-slate-400 bg-slate-100 border border-slate-200/60 py-0.5 px-2 rounded-full font-mono">
-                              독촉 이력 없음
-                            </span>
-                          )}
-                        </div>
-                        {hasNotifiedBefore && (
-                          <span className="text-[9px] text-slate-400 font-medium block mt-0.5">
-                            최종: {overdue.lastNotifyDate?.substring(5, 16) || '-'}
-                          </span>
-                        )}
-                      </div>
+                    <div className="flex items-center gap-2 w-full md:w-auto justify-end shrink-0 border-t border-slate-50 md:border-0 pt-3 md:pt-0">
 
                       {/* Control Operations Block */}
                       <div className="flex items-center gap-1.5" id={`dashboard-overdue-controls-${overdue.rentalId}`}>
@@ -551,15 +566,26 @@ export default function DashboardView({
                           ) : hasNotifiedBefore ? (
                             <>
                               <Sparkles className="w-3.5 h-3.5" />
-                              추가독촉
+                              메일 재발송
                             </>
                           ) : (
                             <>
                               <AlertCircle className="w-3.5 h-3.5" />
-                              독촉초안
+                              메일 발송
                             </>
                           )}
                         </button>
+
+                        {/* 발송 횟수 아이콘 표시 */}
+                        {hasNotifiedBefore && (
+                          <span
+                            className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-150 py-1 px-2 rounded-full font-mono"
+                            title={`반납 요청 메일 ${overdue.notifyCount}회 발송${overdue.lastNotifyDate ? ` · 최종 ${overdue.lastNotifyDate.substring(5, 16)}` : ''}`}
+                          >
+                            <History className="w-3 h-3 text-indigo-500" />
+                            {overdue.notifyCount}
+                          </span>
+                        )}
 
                       </div>
                     </div>
@@ -578,7 +604,7 @@ export default function DashboardView({
             <div className="flex justify-between items-center border-b border-slate-150 pb-3">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4.5 h-4.5 text-rose-500 block shrink-0 animate-pulse" />
-                <h3 className="text-sm font-extrabold text-slate-800">연체 자산 리스크 진단 현황판</h3>
+                <h3 className="text-sm font-extrabold text-slate-800">연체 현황판</h3>
               </div>
               <span className="text-[10px] bg-rose-50 text-rose-700 px-2 py-0.5 rounded-full font-extrabold font-mono uppercase">
                 Risk Analytics
@@ -648,14 +674,14 @@ export default function DashboardView({
             <div className="bg-indigo-50/40 p-3.5 rounded-xl border border-indigo-150/50 text-xs text-slate-600 space-y-1.5 leading-relaxed font-sans" id="diagnostics-compliance-rules">
               <h4 className="font-extrabold text-slate-800 flex items-center gap-1">
                 <Sparkles className="w-3.5 h-3.5 text-indigo-600 block shrink-0" />
-                스마트 자산 보호 경보:
+                샘플 반납 요청 알림:
               </h4>
               <ul className="text-[11px] text-slate-500 pl-4 list-disc space-y-1 font-medium">
                 <li>
                   현재 대여 수명 연체중 20만 원 이상의 <b className="text-slate-700">고가 바잉 의류 샘플</b>이 집중 정체 구역에 속해 있습니다.
                 </li>
                 <li>
-                  장기 연체 누적 비중이 높은 부서 기안자에 대해 좌측 표의 <b className="text-indigo-700">"추가독촉"</b> 또는 <b className="text-rose-600">"독촉초안"</b> 버튼을 클릭하여 즉각적인 자동 독촉 메일을 발송해 보세요.
+                  장기 연체 누적 비중이 높은 부서 기안자에 대해 좌측 표의 <b className="text-indigo-700">"메일 재발송"</b> 또는 <b className="text-rose-600">"메일 발송"</b> 버튼을 클릭하여 반납 요청 메일을 발송해 보세요.
                 </li>
               </ul>
             </div>

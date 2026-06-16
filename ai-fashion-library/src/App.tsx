@@ -3,25 +3,25 @@ import { motion } from 'motion/react';
 import { 
   Columns3, Package, Users, BarChart3, Receipt, Settings, Bell, 
   HelpCircle, LogOut, CheckCircle, RefreshCw, AlertTriangle, ChevronDown, ChevronLeft,
-  LayoutGrid, Folder, Activity, Trash2, ShieldCheck, Sparkles, Database,
-  Upload, ShoppingCart, RotateCcw, ArrowUpRight, History, Tags, Tag, User, Clock, UserCheck
+  LayoutGrid, Folder, Activity, Trash2, Sparkles, Database,
+  Upload, ShoppingCart, RotateCcw, ArrowUpRight, History, Tags, Tag, User, Clock, UserCheck, Library
 } from 'lucide-react';
-import { Sample, Rental, Member, Group, Category, Brand } from './types';
+import { Sample, Rental, Member, Group, Category, Brand, ContentNode } from './types';
 import DashboardView from './components/DashboardView';
 import SampleManagerView from './components/SampleManagerView';
 import MemberManagerView from './components/MemberManagerView';
 import PendingMemberView from './components/PendingMemberView';
-import RolePermissionView from './components/RolePermissionView';
 import BrandManagerView from './components/BrandManagerView';
 import RentalManagerView from './components/RentalManagerView';
 import CategoryManagerView from './components/CategoryManagerView';
+import ContentRepositoryView from './components/ContentRepositoryView';
 import LoginView from './components/LoginView';
 import logoUrl from './assets/logo.png';
 
 const AUTH_STORAGE_KEY = 'csb_auth_member_id';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rental_scan' | 'rental_status' | 'categories' | 'settings_pending' | 'settings_users' | 'settings_roles' | 'settings_brands'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rental_scan' | 'rental_status' | 'contents' | 'categories' | 'settings_pending' | 'settings_users' | 'settings_brands'>('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({});
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -34,6 +34,7 @@ export default function App() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
+  const [contents, setContents] = useState<ContentNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorWord, setErrorWord] = useState('');
   const [currentUser, setCurrentUser] = useState<Member | null>(null);
@@ -53,6 +54,7 @@ export default function App() {
         setGroups(data.groups || []);
         setCategories(data.categories || []);
         setBrands(data.brands || []);
+        setContents(data.contents || []);
         setErrorWord('');
         setLoading(false);
       })
@@ -77,6 +79,7 @@ export default function App() {
         setGroups(data.groups || []);
         setCategories(data.categories || []);
         setBrands(data.brands || []);
+        setContents(data.contents || []);
       })
       .catch((err) => console.error('Silent refresh error:', err));
   };
@@ -105,7 +108,7 @@ export default function App() {
   };
 
   // Generic Save / Update back to the server.ts JSON db
-  const handleSaveDB = (newSamples: Sample[], newMembers?: Member[], newGroups?: Group[], newRentals?: Rental[], newCategories?: Category[], newBrands?: Brand[]) => {
+  const handleSaveDB = (newSamples: Sample[], newMembers?: Member[], newGroups?: Group[], newRentals?: Rental[], newCategories?: Category[], newBrands?: Brand[], newContents?: ContentNode[]) => {
     // Optimistic UI update
     const updatedSamples = newSamples;
     const updatedMembers = newMembers || members;
@@ -113,6 +116,7 @@ export default function App() {
     const updatedRentals = newRentals || rentals;
     const updatedCategories = newCategories || categories;
     const updatedBrands = newBrands || brands;
+    const updatedContents = newContents || contents;
 
     setSamples(updatedSamples);
     setMembers(updatedMembers);
@@ -120,6 +124,7 @@ export default function App() {
     setRentals(updatedRentals);
     setCategories(updatedCategories);
     setBrands(updatedBrands);
+    setContents(updatedContents);
 
     fetch('/api/db/save', {
       method: 'POST',
@@ -130,7 +135,8 @@ export default function App() {
         groups: updatedGroups,
         rentals: updatedRentals,
         categories: updatedCategories,
-        brands: updatedBrands
+        brands: updatedBrands,
+        contents: updatedContents
       })
     })
       .then((res) => res.json())
@@ -218,6 +224,7 @@ export default function App() {
                     { id: 'rental_status', label: '대여/반납 현황', icon: History },
                   ],
                 },
+                { id: 'contents', label: '콘텐츠 저장소', icon: Library },
                 {
                   id: 'settings',
                   label: '설정',
@@ -225,8 +232,7 @@ export default function App() {
                   defaultChild: 'settings_pending',
                   children: [
                     { id: 'settings_pending', label: '가입 승인', icon: UserCheck },
-                    { id: 'settings_users', label: '사용자 관리', icon: Users },
-                    { id: 'settings_roles', label: '관리자/권한 관리', icon: ShieldCheck },
+                    { id: 'settings_users', label: '권한 관리', icon: Users },
                     { id: 'settings_brands', label: '브랜드 관리', icon: Tag },
                   ],
                 },
@@ -401,10 +407,10 @@ export default function App() {
               <option value="rental_scan">🔄 대여/반납하기</option>
               <option value="rental_status">🕘 대여/반납 현황</option>
             </optgroup>
+            <option value="contents">📚 콘텐츠 저장소</option>
             <optgroup label="⚙️ 설정">
               <option value="settings_pending">🕓 가입 승인</option>
-              <option value="settings_users">👤 사용자 관리</option>
-              <option value="settings_roles">🛡️ 관리자/권한 관리</option>
+              <option value="settings_users">👤 권한 관리</option>
               <option value="settings_brands">🏷️ 브랜드 관리</option>
             </optgroup>
           </select>
@@ -619,12 +625,20 @@ export default function App() {
                   </div>
                 )}
 
-                {['settings_pending', 'settings_users', 'settings_roles', 'settings_brands'].includes(activeTab) && (
+                {activeTab === 'contents' && (
+                  <div id="contents-subview-frame">
+                    <ContentRepositoryView
+                      contents={contents}
+                      onSave={(newContents) => handleSaveDB(samples, members, groups, rentals, categories, brands, newContents)}
+                    />
+                  </div>
+                )}
+
+                {['settings_pending', 'settings_users', 'settings_brands'].includes(activeTab) && (
                   <div className="flex border-b border-slate-200 mb-6 overflow-x-auto" id="settings-subtabs">
                     {[
                       { id: 'settings_pending', label: '가입 승인', icon: UserCheck },
-                      { id: 'settings_users', label: '사용자 관리', icon: Users },
-                      { id: 'settings_roles', label: '관리자/권한 관리', icon: ShieldCheck },
+                      { id: 'settings_users', label: '권한 관리', icon: Users },
                       { id: 'settings_brands', label: '브랜드 관리', icon: Tag },
                     ].map((tab) => {
                       const TabIcon = tab.icon;
@@ -666,15 +680,6 @@ export default function App() {
                 {activeTab === 'settings_users' && (
                   <div id="settings-users-subview-frame">
                     <MemberManagerView
-                      members={members}
-                      onSave={(newMembers) => handleSaveDB(samples, newMembers)}
-                    />
-                  </div>
-                )}
-
-                {activeTab === 'settings_roles' && (
-                  <div id="settings-roles-subview-frame">
-                    <RolePermissionView
                       members={members}
                       onSave={(newMembers) => handleSaveDB(samples, newMembers)}
                     />
