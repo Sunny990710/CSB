@@ -150,8 +150,49 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+// Blob 모드에서는 함수가 29MB JSON을 직접 반환하면 Vercel 응답 크기 한도(~4.5MB)에
+// 걸리므로, Blob 공개 URL로 302 리다이렉트해 브라우저가 CDN에서 직접 받게 한다.
 app.get('/api/db', async (_req, res) => {
-  res.json(await getDB());
+  try {
+    if (USE_BLOB) {
+      const { blobs } = await list({ prefix: BLOB_KEY, ...blobAuth });
+      let found = blobs.find((b) => b.pathname === BLOB_KEY) || blobs[0];
+      if (!found) {
+        await saveBlobDB(readSeed());
+        const again = await list({ prefix: BLOB_KEY, ...blobAuth });
+        found = again.blobs.find((b) => b.pathname === BLOB_KEY) || again.blobs[0];
+      }
+      if (found) {
+        const bust = `${found.url}${found.url.includes('?') ? '&' : '?'}ts=${Date.now()}`;
+        res.setHeader('Cache-Control', 'no-store');
+        return res.redirect(302, bust);
+      }
+    }
+    return res.json(await getDB());
+  } catch (err) {
+    console.error('GET /api/db error:', err);
+    // 통신 실패 시 번들된 로컬 시드라도 내려준다.
+    return res.json(readSeed());
+  }
+});
+
+// 운영 Blob 저장소를 번들된 로컬 database.json 으로 덮어쓴다(재시드).
+// 프런트의 전체 저장 경로는 요청 본문 한도에 걸리므로, 서버에서 직접 기록한다.
+app.all('/api/db/reseed', async (_req, res) => {
+  try {
+    const seed = readSeed();
+    await saveDB(seed);
+    res.json({
+      success: true,
+      message: 'Blob 저장소를 로컬 database.json 내용으로 재시드했습니다.',
+      bytes: JSON.stringify(seed).length,
+      samples: seed.samples?.length ?? 0,
+      categories: seed.categories?.length ?? 0,
+    });
+  } catch (err: any) {
+    console.error('reseed error:', err);
+    res.status(500).json({ success: false, message: String(err?.message || err) });
+  }
 });
 
 app.post('/api/db/save', async (req, res) => {
