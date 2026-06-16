@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { put, list } from '@vercel/blob';
@@ -20,7 +21,33 @@ app.use(express.json({ limit: '50mb' }));
 // 로컬 개발: 토큰이 없으면 기존처럼 파일시스템의 database.json 을 사용한다.
 const DATA_DIR = process.env.DATA_DIR || process.cwd();
 const DB_FILE = path.join(DATA_DIR, 'database.json');
-const SEED_FILE = path.join(process.cwd(), 'database.json');
+
+// ESM 번들에서 현재 파일 위치
+let MODULE_DIR = process.cwd();
+try { MODULE_DIR = path.dirname(fileURLToPath(import.meta.url)); } catch { /* noop */ }
+
+// 번들된 시드(database.json)가 배포 환경에 따라 다른 위치에 놓일 수 있어 후보를 모두 탐색
+const SEED_CANDIDATES = [
+  path.join(process.cwd(), 'database.json'),
+  path.join(MODULE_DIR, 'database.json'),
+  path.join(MODULE_DIR, '..', 'database.json'),
+  path.join(MODULE_DIR, '..', '..', 'database.json'),
+  '/var/task/database.json',
+  '/var/task/ai-fashion-library/database.json',
+];
+
+function findSeedFile(): string | null {
+  for (const p of SEED_CANDIDATES) {
+    try { if (fs.existsSync(p) && fs.statSync(p).size > 100) return p; } catch { /* noop */ }
+  }
+  // size 조건 없이 한 번 더
+  for (const p of SEED_CANDIDATES) {
+    try { if (fs.existsSync(p)) return p; } catch { /* noop */ }
+  }
+  return null;
+}
+
+const SEED_FILE = findSeedFile() || path.join(process.cwd(), 'database.json');
 
 // 인증 방식 두 가지를 모두 지원한다.
 //  1) 정적 토큰: BLOB_READ_WRITE_TOKEN (스토어를 직접 만들 때 주입되거나 수동 설정)
@@ -37,12 +64,13 @@ const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], categories
 
 // 번들/로컬에 포함된 database.json 을 초기 시드 데이터로 읽는다.
 function readSeed(): any {
-  try {
-    if (fs.existsSync(SEED_FILE)) {
-      return JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'));
+  const f = findSeedFile();
+  if (f) {
+    try {
+      return JSON.parse(fs.readFileSync(f, 'utf8'));
+    } catch (err) {
+      console.error('Error reading seed file:', f, err);
     }
-  } catch (err) {
-    console.error('Error reading seed file:', err);
   }
   return { ...EMPTY_DB };
 }
@@ -176,17 +204,49 @@ app.get('/api/db', async (_req, res) => {
   }
 });
 
+// 시드 파일 탐색 진단용
+app.get('/api/db/_seedinfo', (_req, res) => {
+  const candidates = SEED_CANDIDATES.map((p) => {
+    let exists = false; let size = 0;
+    try { exists = fs.existsSync(p); if (exists) size = fs.statSync(p).size; } catch { /* noop */ }
+    return { path: p, exists, size };
+  });
+  let cwdList: string[] = [];
+  let taskList: string[] = [];
+  try { cwdList = fs.readdirSync(process.cwd()); } catch { /* noop */ }
+  try { taskList = fs.readdirSync('/var/task'); } catch { /* noop */ }
+  res.json({
+    cwd: process.cwd(),
+    moduleDir: MODULE_DIR,
+    chosenSeed: findSeedFile(),
+    candidates,
+    cwdList,
+    taskList,
+  });
+});
+
 // 운영 Blob 저장소를 번들된 로컬 database.json 으로 덮어쓴다(재시드).
 // 프런트의 전체 저장 경로는 요청 본문 한도에 걸리므로, 서버에서 직접 기록한다.
-app.all('/api/db/reseed', async (_req, res) => {
+app.all('/api/db/reseed', async (req, res) => {
   try {
     const seed = readSeed();
+    const empty = (seed.samples?.length ?? 0) === 0 && (seed.members?.length ?? 0) === 0 && (seed.categories?.length ?? 0) === 0;
+    const force = String((req.query as any)?.force || '') === '1';
+    // 빈 시드로 기존 Blob을 덮어써 데이터가 유실되는 사고를 방지
+    if (empty && !force) {
+      return res.status(409).json({
+        success: false,
+        message: '시드 파일을 찾지 못했거나 비어 있어 재시드를 중단했습니다. /api/db/_seedinfo 로 경로를 확인하세요.',
+        chosenSeed: findSeedFile(),
+      });
+    }
     await saveDB(seed);
     res.json({
       success: true,
       message: 'Blob 저장소를 로컬 database.json 내용으로 재시드했습니다.',
       bytes: JSON.stringify(seed).length,
       samples: seed.samples?.length ?? 0,
+      members: seed.members?.length ?? 0,
       categories: seed.categories?.length ?? 0,
     });
   } catch (err: any) {
