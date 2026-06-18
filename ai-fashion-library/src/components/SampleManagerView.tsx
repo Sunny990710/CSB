@@ -95,6 +95,7 @@ interface SampleManagerViewProps {
   forceTab?: 'list' | 'bulk-excel' | 'bulk-images';
   rentals?: Rental[];
   categories?: Category[];
+  statusFilter?: string;
 }
 
 // 상품코드/상품명으로 검색해서 매칭 대상 샘플을 고르는 콤보박스 (의류가 많을 때 드롭다운 대신 사용)
@@ -211,7 +212,7 @@ function SampleMatchCombobox({
   );
 }
 
-export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals = [], categories = [] }: SampleManagerViewProps) {
+export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals = [], categories = [], statusFilter }: SampleManagerViewProps) {
   // Active category names from the category manager (fallback to legacy defaults)
   const activeCategoryNames = categories.filter((c) => c.useYn === '사용').map((c) => c.name);
   const fallbackCategoryNames = ['오리지널', '자사샘플', '중국샘플', '유형화샘플', 'EP샘플'];
@@ -254,6 +255,10 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
   const [selectedCategory, setSelectedCategory] = useState('전체');
   const [selectedStatus, setSelectedStatus] = useState('전체');
   const [selectedRegisterer, setSelectedRegisterer] = useState('전체');
+
+  useEffect(() => {
+    if (statusFilter) setSelectedStatus(statusFilter);
+  }, [statusFilter]);
   const [regDateFrom, setRegDateFrom] = useState('');
   const [regDateTo, setRegDateTo] = useState('');
   const [regDateOpen, setRegDateOpen] = useState(false);

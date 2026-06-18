@@ -133,6 +133,11 @@ export interface RentalAgreement {
   signatureStatus: 'pending' | 'signed';
   signedAt?: string | null;
   signedBy?: string | null;
+  approvalStatus?: 'pending' | 'approved' | 'rejected';
+  rejectedAt?: string | null;
+  rejectedBy?: string | null;
+  approvedAt?: string | null;
+  approvedBy?: string | null;
   createdAt: string;
 }
 
@@ -157,6 +162,29 @@ export interface Rental {
     content: string;
   }[];
   agreementId?: string | null;
+}
+
+export interface LossDamageReport {
+  reportId: string;
+  rentalId: string;
+  sampleCode: string;
+  reportType: '분실' | '훼손';
+  companyName: string;
+  brand: string;
+  department: string;
+  employeeId: string;
+  employeeName: string;
+  sampleName: string;
+  rentalDate: string;
+  processedDate: string;
+  reason: string;
+  compensationAgreed: boolean;
+  signedAt: string;
+  signedBy: string;
+  primaryEvaluator?: string;
+  fashionArchiveReviewer?: string;
+  fashionInstituteReviewer?: string;
+  createdAt: string;
 }
 
 const parseDateOnlyUtc = (dateStr: string) => {

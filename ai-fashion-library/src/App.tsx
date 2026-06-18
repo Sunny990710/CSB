@@ -4,9 +4,9 @@ import {
   Columns3, Package, Users, BarChart3, Receipt, Settings, Bell, 
   HelpCircle, LogOut, CheckCircle, RefreshCw, AlertTriangle, ChevronDown, ChevronLeft,
   LayoutGrid, Folder, Activity, Trash2, Sparkles, Database,
-  Upload, ShoppingCart, RotateCcw, ArrowUpRight, History, Tags, Tag, User, Clock, UserCheck, Library
+  Upload, ShoppingCart, RotateCcw, ArrowUpRight, Tags, Tag, User, Clock, UserCheck, Library, History, FileText,
 } from 'lucide-react';
-import { Sample, Rental, RentalAgreement, Member, Group, Category, Brand, ContentNode, effectiveRentalStatus } from './types';
+import { Sample, Rental, RentalAgreement, Member, Group, Category, Brand, ContentNode, LossDamageReport, effectiveRentalStatus } from './types';
 import DashboardView from './components/DashboardView';
 import SampleManagerView from './components/SampleManagerView';
 import MemberManagerView from './components/MemberManagerView';
@@ -21,7 +21,7 @@ import logoUrl from './assets/logo.png';
 const AUTH_STORAGE_KEY = 'csb_auth_member_id';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rental_scan' | 'rental_status' | 'contents' | 'categories' | 'settings_pending' | 'settings_users' | 'settings_brands'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rental_status' | 'rental_documents' | 'contents' | 'categories' | 'settings_pending' | 'settings_users' | 'settings_brands'>('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({});
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -31,6 +31,7 @@ export default function App() {
   const [samples, setSamples] = useState<Sample[]>([]);
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [rentalAgreements, setRentalAgreements] = useState<RentalAgreement[]>([]);
+  const [lossDamageReports, setLossDamageReports] = useState<LossDamageReport[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -39,6 +40,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [errorWord, setErrorWord] = useState('');
   const [currentUser, setCurrentUser] = useState<Member | null>(null);
+  const [sampleStatusFilter, setSampleStatusFilter] = useState('전체');
 
   // Fetch full state on mount
   const handleFetchAllData = () => {
@@ -52,6 +54,7 @@ export default function App() {
         setSamples(data.samples || []);
         setRentals(data.rentals || []);
         setRentalAgreements(data.rentalAgreements || []);
+        setLossDamageReports(data.lossDamageReports || []);
         setMembers(data.members || []);
         setGroups(data.groups || []);
         setCategories(data.categories || []);
@@ -73,8 +76,8 @@ export default function App() {
   };
 
   // 대여/반납 등 인라인 작업 후 — 로딩 화면 없이 데이터만 갱신 (실시간 로그 유지)
-  const handleSilentRefresh = () => {
-    fetch('/api/db')
+  const handleSilentRefresh = (): Promise<void> => {
+    return fetch('/api/db')
       .then((res) => {
         if (!res.ok) throw new Error('서버 데이터를 전송받지 못했습니다.');
         return res.json();
@@ -83,6 +86,7 @@ export default function App() {
         setSamples(data.samples || []);
         setRentals(data.rentals || []);
         setRentalAgreements(data.rentalAgreements || []);
+        setLossDamageReports(data.lossDamageReports || []);
         setMembers(data.members || []);
         setGroups(data.groups || []);
         setCategories(data.categories || []);
@@ -145,6 +149,7 @@ export default function App() {
         groups: updatedGroups,
         rentals: updatedRentals,
         rentalAgreements: updatedRentalAgreements,
+        lossDamageReports,
         categories: updatedCategories,
         brands: updatedBrands,
         contents: updatedContents
@@ -229,10 +234,10 @@ export default function App() {
                   id: 'rentals',
                   label: '대여관리',
                   icon: Activity,
-                  defaultChild: 'rental_scan',
+                  defaultChild: 'rental_status',
                   children: [
-                    { id: 'rental_scan', label: '대여/반납하기', icon: ArrowUpRight },
                     { id: 'rental_status', label: '대여/반납 현황', icon: History },
+                    { id: 'rental_documents', label: '문서함', icon: FileText },
                   ],
                 },
                 { id: 'contents', label: '콘텐츠 저장소', icon: Library },
@@ -250,7 +255,7 @@ export default function App() {
               ].map((item) => {
                 const Icon = item.icon;
 
-                // --- Expandable group (대여관리) ---
+                // --- Expandable group (대여관리, 설정) ---
                 if ('children' in item && item.children) {
                   const groupActive = item.children.some((c) => c.id === activeTab);
                   const showChildren = !isSidebarCollapsed && ((openMenus[item.id] ?? false) || groupActive);
@@ -414,10 +419,8 @@ export default function App() {
             <option value="upload">⬆️ 업로드 (일괄 의류 매칭)</option>
             <option value="samples">📂 상품관리 (샘플 대장)</option>
             <option value="categories">🗂️ 카테고리 관리</option>
-            <optgroup label="📋 대여관리">
-              <option value="rental_scan">🔄 대여/반납하기</option>
-              <option value="rental_status">🕘 대여/반납 현황</option>
-            </optgroup>
+            <option value="rental_status">📋 대여/반납 현황</option>
+            <option value="rental_documents">📁 문서함</option>
             <option value="contents">📚 콘텐츠 저장소</option>
             <optgroup label="⚙️ 설정">
               <option value="settings_pending">🕓 가입 승인</option>
@@ -597,44 +600,88 @@ export default function App() {
                       forceTab="list"
                       rentals={rentals}
                       categories={categories}
+                      statusFilter={sampleStatusFilter}
                     />
                   </div>
                 )}
 
-                {(activeTab === 'rental_scan' || activeTab === 'rental_status') && (
+                {['rental_status', 'rental_documents'].includes(activeTab) && (
+                  <div className="flex border-b border-slate-200 mb-6 overflow-x-auto" id="rental-subtabs">
+                    {[
+                      { id: 'rental_status', label: '대여/반납 현황', icon: History },
+                      { id: 'rental_documents', label: '문서함', icon: FileText },
+                    ].map((tab) => {
+                      const TabIcon = tab.icon;
+                      const isActive = activeTab === tab.id;
+                      const pendingCount =
+                        tab.id === 'rental_status'
+                          ? rentalAgreements
+                              .filter(
+                                (a) =>
+                                  a.signatureStatus === 'signed' &&
+                                  a.approvalStatus !== 'approved' &&
+                                  a.approvalStatus !== 'rejected'
+                              )
+                              .reduce((sum, a) => sum + a.items.length, 0)
+                          : 0;
+                      const docCount =
+                        tab.id === 'rental_documents'
+                          ? rentalAgreements.length + lossDamageReports.length
+                          : 0;
+                      const badgeCount = tab.id === 'rental_status' ? pendingCount : docCount;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => setActiveTab(tab.id as any)}
+                          className={`py-3.5 px-6 font-semibold text-xs flex items-center gap-2 border-b-2 font-sans whitespace-nowrap transition-all cursor-pointer ${
+                            isActive
+                              ? 'border-indigo-600 text-indigo-600'
+                              : 'border-transparent text-slate-500 hover:text-slate-800'
+                          }`}
+                          id={`rental-tab-btn-${tab.id}`}
+                        >
+                          <TabIcon className="w-4 h-4" />
+                          <span>{tab.label}</span>
+                          {badgeCount > 0 && (
+                            <span className="bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">
+                              {badgeCount}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {activeTab === 'rental_status' && (
                   <div id="rentals-subview-frame">
-                    <div className="flex border-b border-slate-200 mb-6 overflow-x-auto" id="rental-subtabs">
-                      {[
-                        { id: 'rental_scan', label: '대여/반납하기', icon: ArrowUpRight },
-                        { id: 'rental_status', label: '대여/반납 현황', icon: History },
-                      ].map((tab) => {
-                        const TabIcon = tab.icon;
-                        const isActive = activeTab === tab.id;
-                        return (
-                          <button
-                            key={tab.id}
-                            onClick={() => setActiveTab(tab.id as any)}
-                            className={`py-3.5 px-6 font-semibold text-xs flex items-center gap-2 border-b-2 font-sans whitespace-nowrap transition-all cursor-pointer ${
-                              isActive
-                                ? 'border-indigo-600 text-indigo-600'
-                                : 'border-transparent text-slate-500 hover:text-slate-800'
-                            }`}
-                            id={`rental-tab-btn-${tab.id}`}
-                          >
-                            <TabIcon className="w-4 h-4" />
-                            <span>{tab.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
                     <RentalManagerView
+                      viewMode="status"
                       rentals={rentals}
                       rentalAgreements={rentalAgreements}
+                      lossDamageReports={lossDamageReports}
                       samples={samples}
                       members={members}
+                      categories={categories}
                       onSaveDB={(newRentals, newSamples) => handleSaveDB(newSamples, members, groups, newRentals)}
                       onRefreshData={handleSilentRefresh}
-                      view={activeTab === 'rental_scan' ? 'scan' : 'status'}
+                    />
+                  </div>
+                )}
+
+                {activeTab === 'rental_documents' && (
+                  <div id="rentals-documents-subview-frame">
+                    <RentalManagerView
+                      viewMode="documents"
+                      rentals={rentals}
+                      rentalAgreements={rentalAgreements}
+                      lossDamageReports={lossDamageReports}
+                      samples={samples}
+                      members={members}
+                      categories={categories}
+                      onSaveDB={(newRentals, newSamples) => handleSaveDB(newSamples, members, groups, newRentals)}
+                      onRefreshData={handleSilentRefresh}
                     />
                   </div>
                 )}

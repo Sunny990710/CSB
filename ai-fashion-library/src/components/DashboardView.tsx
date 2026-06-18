@@ -4,7 +4,7 @@ import {
   Package, RefreshCw, AlertTriangle, ThumbsDown, Calendar, 
   Search, ArrowRight, UserCheck, Send, Mail, Sparkles, History, 
   User, Clock, MessageSquare, AlertCircle, Phone, ArrowUpRight, Check, CheckCircle2,
-  TrendingUp, TrendingDown, Minus,
+  TrendingUp, TrendingDown, Minus, Flame,
   ChevronRight, ChevronDown, X,
 } from 'lucide-react';
 import { Sample, Rental, Member, rentalStatusLabel, effectiveRentalStatus } from '../types';
@@ -183,53 +183,43 @@ export default function DashboardView({
   // Overdue lists for alert panel
   const activeOverdues = rentals.filter((r) => effectiveRentalStatus(r, todayStr) === '연체중');
 
-  const overdueDeptBreakdown = useMemo(() => {
-    const counts: Record<string, number> = {};
-    activeOverdues.forEach((r) => {
-      const dept = r.borrowerGroup || '미지정';
-      counts[dept] = (counts[dept] || 0) + 1;
-    });
-    const total = activeOverdues.length;
-    if (total === 0) return [];
-    return Object.entries(counts)
-      .map(([dept, count]) => ({
-        dept,
-        count,
-        pct: Math.round((count / total) * 100),
-      }))
-      .sort((a, b) => b.count - a.count);
-  }, [activeOverdues]);
+  const popularSamplesTop5 = useMemo(() => {
+    const rentalCounts = new Map<string, number>();
+    const deptCountsBySample = new Map<string, Map<string, number>>();
 
-  const overdueByDept = useMemo(() => {
-    const map: Record<string, Rental[]> = {};
-    activeOverdues.forEach((r) => {
+    rentals.forEach((r) => {
+      rentalCounts.set(r.sampleCode, (rentalCounts.get(r.sampleCode) || 0) + 1);
       const dept = r.borrowerGroup || '미지정';
-      if (!map[dept]) map[dept] = [];
-      map[dept].push(r);
+      if (!deptCountsBySample.has(r.sampleCode)) deptCountsBySample.set(r.sampleCode, new Map());
+      const deptMap = deptCountsBySample.get(r.sampleCode)!;
+      deptMap.set(dept, (deptMap.get(dept) || 0) + 1);
     });
-    return map;
-  }, [activeOverdues]);
+
+    const topDeptOf = (code: string) => {
+      const deptMap = deptCountsBySample.get(code);
+      if (!deptMap || deptMap.size === 0) return '-';
+      return [...deptMap.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    };
+
+    return [...rentalCounts.entries()]
+      .map(([code, count]) => {
+        const sample = samples.find((s) => s.code === code);
+        const rental = rentals.find((r) => r.sampleCode === code);
+        return {
+          code,
+          name: sample?.name || rental?.sampleName || code,
+          department: topDeptOf(code),
+          count,
+        };
+      })
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+  }, [rentals, samples]);
 
   // 기준일(시스템 표준일) 대비 연체 일수
   const overdueDaysOf = (r: Rental) => {
     const dueTime = new Date(r.dueDate).getTime();
     return Math.ceil(Math.abs(TODAY.getTime() - dueTime) / MS_DAY);
-  };
-
-  const overdueBorrowersOfDept = (dept: string) => {
-    const rentalsInDept = overdueByDept[dept] || [];
-    const byBorrower = new Map<string, { borrowerId: string; name: string; count: number; maxDays: number }>();
-    rentalsInDept.forEach((r) => {
-      const days = overdueDaysOf(r);
-      const existing = byBorrower.get(r.borrowerId);
-      if (existing) {
-        existing.count += 1;
-        existing.maxDays = Math.max(existing.maxDays, days);
-      } else {
-        byBorrower.set(r.borrowerId, { borrowerId: r.borrowerId, name: r.borrowerName, count: 1, maxDays: days });
-      }
-    });
-    return [...byBorrower.values()].sort((a, b) => b.maxDays - a.maxDays);
   };
 
   // Local states for AI notification panel
@@ -238,7 +228,6 @@ export default function DashboardView({
   const [filterDept, setFilterDept] = useState('전체');
   const [overdueWeekFilter, setOverdueWeekFilter] = useState<OverdueWeekFilter>(1);
   const [managerTask, setManagerTask] = useState<ManagerTask>('overdue');
-  const [selectedOverdueDept, setSelectedOverdueDept] = useState<string | null>(null);
   const [bulkSending, setBulkSending] = useState(false);
   const overdueScrollRef = useRef<HTMLDivElement>(null);
 
@@ -300,9 +289,9 @@ export default function DashboardView({
           title: `연체 ${activeOverdues.length}건 — 반납 알림 발송 필요`,
           sub: '에이전트가 단계별 메일 자동 발송',
           icon: AlertTriangle,
-          cardClass: 'bg-rose-50/35 hover:bg-rose-50/55',
-          activeClass: 'bg-rose-50/60',
-          iconClass: 'text-rose-500',
+          cardClass: 'bg-rose-100/70 hover:bg-rose-100 border border-rose-100/80',
+          activeClass: 'bg-rose-100 border border-rose-200',
+          iconClass: 'text-rose-600',
         },
         {
           id: 'due-soon' as const,
@@ -333,7 +322,7 @@ export default function DashboardView({
       desc: '이번 주 반납 예정 건에 사전 안내 메일을 보내세요.',
       badge: `${dueSoonRentals.length}건`,
       badgeClass: 'bg-amber-100 text-amber-800',
-      headerClass: 'border-amber-100/60 bg-gradient-to-r from-amber-50/30 to-transparent',
+      headerClass: 'border-slate-100/60 bg-white',
       pulseClass: 'bg-amber-500',
       pingClass: 'bg-amber-400',
     },
@@ -480,45 +469,52 @@ export default function DashboardView({
     else window.location.reload();
   };
 
+  const sendPreNoticeNotification = async (rental: Rental): Promise<boolean> => {
+    const daysLeft = Math.max(0, daysUntilDue(rental));
+    const draftRes = await fetch('/api/agent/draft-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        borrowerName: rental.borrowerName,
+        borrowerGroup: rental.borrowerGroup,
+        sampleName: rental.sampleName,
+        sampleCode: rental.sampleCode,
+        dueDate: rental.dueDate,
+        daysOverdue: 0,
+        emailType: 'gentle',
+        daysUntilDue: daysLeft,
+      }),
+    });
+    const draftData = await draftRes.json();
+
+    const sendRes = await fetch('/api/agent/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rentalId: rental.rentalId,
+        subject: draftData.subject || `[반납 안내] 대여하신 의류 샘플 반납 예정일 안내`,
+        content: draftData.content || `안녕하세요, ${rental.borrowerName}님.\n\n대여 중인 의류 샘플의 반납 예정일을 안내드립니다.`,
+      }),
+    });
+    const sendData = await sendRes.json();
+
+    if (!sendData.success) {
+      alert(`발송 실패 (${rental.borrowerName}): ${sendData.message}`);
+      return false;
+    }
+    return true;
+  };
+
   const handleSendPreNoticeEmail = async (rental: Rental) => {
     if (!confirm(`${rental.borrowerName} 님에게 반납 예정 사전 안내 메일을 발송하시겠습니까?`)) return;
 
     setSendingId(rental.rentalId);
     try {
-      const daysLeft = Math.max(0, daysUntilDue(rental));
-      const draftRes = await fetch('/api/agent/draft-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          borrowerName: rental.borrowerName,
-          borrowerGroup: rental.borrowerGroup,
-          sampleName: rental.sampleName,
-          sampleCode: rental.sampleCode,
-          dueDate: rental.dueDate,
-          daysOverdue: 0,
-          emailType: 'gentle',
-          daysUntilDue: daysLeft,
-        }),
-      });
-      const draftData = await draftRes.json();
-
-      const sendRes = await fetch('/api/agent/send-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          rentalId: rental.rentalId,
-          subject: draftData.subject || `[반납 안내] 대여하신 의류 샘플 반납 예정일 안내`,
-          content: draftData.content || `안녕하세요, ${rental.borrowerName}님.\n\n대여 중인 의류 샘플의 반납 예정일을 안내드립니다.`,
-        }),
-      });
-      const sendData = await sendRes.json();
-
-      if (sendData.success) {
+      const ok = await sendPreNoticeNotification(rental);
+      if (ok) {
         alert(`${rental.borrowerName} 님에게 사전 안내 메일이 전송되었습니다.`);
         if (onRefreshData) onRefreshData();
         else window.location.reload();
-      } else {
-        alert('발송 실패: ' + sendData.message);
       }
     } catch (err) {
       console.error(err);
@@ -526,6 +522,49 @@ export default function DashboardView({
     } finally {
       setSendingId(null);
     }
+  };
+
+  const handleBulkSendPreNoticeEmails = async () => {
+    if (filteredDueSoon.length === 0) return;
+
+    const recipientCount = preNoticeNotifyRecipients.length;
+    if (
+      !confirm(
+        `${filteredDueSoon.length}건 반납 예정 사전 안내를 일괄 발송합니다.\n\n` +
+          `· 이번 주 반납 예정 건\n` +
+          `· 발송 예정 ${recipientCount}명`
+      )
+    ) {
+      return;
+    }
+
+    setBulkSending(true);
+    let success = 0;
+    let fail = 0;
+
+    for (const rental of filteredDueSoon) {
+      setSendingId(rental.rentalId);
+      try {
+        const ok = await sendPreNoticeNotification(rental);
+        if (ok) success += 1;
+        else fail += 1;
+      } catch (err) {
+        console.error(err);
+        fail += 1;
+      }
+    }
+
+    setSendingId(null);
+    setBulkSending(false);
+
+    if (fail === 0) {
+      alert(`${success}건 사전 안내 메일을 일괄 발송했습니다.`);
+    } else {
+      alert(`발송 완료 ${success}건 · 실패 ${fail}건`);
+    }
+
+    if (onRefreshData) onRefreshData();
+    else window.location.reload();
   };
 
   // Compute stats for charts
@@ -597,6 +636,11 @@ export default function DashboardView({
       );
     })
     .sort((a, b) => daysUntilDue(a) - daysUntilDue(b));
+
+  const preNoticeNotifyRecipients = useMemo(() => {
+    const names = new Set(filteredDueSoon.map((rental) => rental.borrowerName));
+    return Array.from(names);
+  }, [filteredDueSoon]);
 
   const taskListCount =
     managerTask === 'overdue'
@@ -968,8 +1012,8 @@ export default function DashboardView({
             </div>
 
             {managerTask === 'overdue' && (
-              <div className="rounded-lg border border-rose-100/80 bg-white/70 px-3 py-2.5 space-y-2">
-                <div className="flex items-start justify-between gap-3">
+              <div className="rounded-lg border border-rose-100/80 bg-white/70 px-3 py-2.5">
+                <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-[11px] font-extrabold text-slate-700">
                       연체 {overdueWeekFilter}주 · {OVERDUE_WEEK_RULES[overdueWeekFilter].summary}
@@ -997,26 +1041,39 @@ export default function DashboardView({
                     )}
                   </button>
                 </div>
+              </div>
+            )}
 
-                {overdueNotifyRecipients.length > 0 ? (
-                  <div className="space-y-1 max-h-24 overflow-y-auto">
-                    {overdueNotifyRecipients.map((recipient) => (
-                      <div key={recipient.key} className="flex items-center justify-between gap-2 text-[10px]">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="shrink-0 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">
-                            {recipient.roleLabel}
-                          </span>
-                          <span className="font-bold text-slate-700 truncate">{recipient.name}</span>
-                        </div>
-                        {recipient.email && (
-                          <span className="text-slate-400 truncate shrink-0 max-w-[9rem] font-mono">{recipient.email}</span>
-                        )}
-                      </div>
-                    ))}
+            {managerTask === 'due-soon' && (
+              <div className="rounded-lg border border-slate-100/80 bg-white px-3 py-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-extrabold text-slate-700">
+                      이번 주 반납 예정 · 사전 안내 메일
+                    </p>
+                    <p className="text-[10px] text-slate-500 font-medium mt-0.5">
+                      {filteredDueSoon.length}건 · 발송 예정 <span className="font-bold text-amber-600">{preNoticeNotifyRecipients.length}명</span>
+                    </p>
                   </div>
-                ) : (
-                  <p className="text-[10px] text-slate-400 font-medium">현재 필터에 해당하는 연체 건이 없습니다.</p>
-                )}
+                  <button
+                    type="button"
+                    onClick={handleBulkSendPreNoticeEmails}
+                    disabled={bulkSending || filteredDueSoon.length === 0}
+                    className="shrink-0 h-8 px-3 rounded-lg bg-amber-600 text-white text-[11px] font-extrabold flex items-center gap-1.5 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                  >
+                    {bulkSending ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        발송 중...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-3.5 h-3.5" />
+                        일괄 발송
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -1199,7 +1256,7 @@ export default function DashboardView({
                   <div className="flex items-center gap-2 w-full md:w-auto justify-end shrink-0 border-t border-slate-50 md:border-0 pt-3 md:pt-0">
                     <button
                       onClick={() => handleSendPreNoticeEmail(rental)}
-                      disabled={sendingId === rental.rentalId}
+                      disabled={bulkSending || sendingId === rental.rentalId}
                       className="py-1.5 px-3 rounded-lg shadow-sm font-bold text-[11px] flex items-center gap-1 transition-colors active:scale-[0.98] cursor-pointer bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 disabled:opacity-50"
                     >
                       {sendingId === rental.rentalId ? (
@@ -1267,68 +1324,39 @@ export default function DashboardView({
               })}
             </div>
 
-            <div className="shrink-0 mt-4 space-y-3" id="overdue-status-panel">
-              <div className="flex items-center gap-2 min-w-0">
-                <TrendingUp className="w-4.5 h-4.5 text-rose-500 block shrink-0" />
-                <h3 className="text-sm font-extrabold text-slate-800">연체 현황</h3>
+            <div className="shrink-0 mt-4 flex-1 min-h-0 flex flex-col" id="popular-samples-panel">
+              <div className="flex items-center gap-2 mb-3 shrink-0">
+                <Flame className="w-4.5 h-4.5 text-violet-600 block shrink-0" />
+                <h3 className="text-sm font-extrabold text-slate-800">인기 샘플 TOP 5</h3>
               </div>
 
-              <div className="rounded-xl border border-slate-100 bg-slate-50/40 p-3 space-y-2.5" id="overdue-dept-breakdown">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-extrabold text-slate-700">부서별 연체 비중</span>
-                  <span className="text-[9px] font-bold text-slate-400 shrink-0">연체 건수</span>
-                </div>
-
-                {overdueDeptBreakdown.length === 0 ? (
-                  <p className="text-[11px] text-slate-400 text-center py-4 font-medium">연체 건이 없습니다.</p>
+              <div className="rounded-xl border border-slate-100 bg-white p-4 flex-1 min-h-0 overflow-y-auto" id="popular-samples-list">
+                {popularSamplesTop5.length === 0 ? (
+                  <p className="text-[11px] text-slate-400 text-center py-6 font-medium">대여 이력이 없습니다.</p>
                 ) : (
-                  <div className="space-y-0">
-                    {overdueDeptBreakdown.map((row, idx) => {
-                      const isExpanded = selectedOverdueDept === row.dept;
-                      const borrowers = isExpanded ? overdueBorrowersOfDept(row.dept) : [];
-
+                  <div className="space-y-3">
+                    {popularSamplesTop5.map((item, idx) => {
+                      const rank = idx + 1;
+                      const isTopThree = rank <= 3;
                       return (
-                      <div
-                        key={row.dept}
-                        className={`py-2 ${idx > 0 ? 'border-t border-slate-100/80' : ''}`}
-                      >
-                        <div className="flex items-center justify-between gap-2 mb-1.5">
-                          <div className="flex items-center gap-0.5 min-w-0">
-                            <span className="text-[11px] font-bold text-slate-700 truncate">{row.dept}</span>
-                            <button
-                              type="button"
-                              onClick={() => setSelectedOverdueDept(isExpanded ? null : row.dept)}
-                              className="p-0.5 rounded hover:bg-slate-200/60 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer shrink-0"
-                              aria-expanded={isExpanded}
-                              aria-label={`${row.dept} 연체자 보기`}
-                            >
-                              <ChevronRight className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-                            </button>
-                          </div>
-                          <span className="text-[11px] font-mono font-bold text-slate-500 shrink-0">
-                            {row.count}건 ({row.pct}%)
+                        <div key={item.code} className="flex items-center gap-3 min-w-0">
+                          <span
+                            className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold shrink-0 ${
+                              isTopThree
+                                ? 'bg-violet-600 text-white'
+                                : 'bg-slate-100 text-slate-500 border border-slate-200'
+                            }`}
+                          >
+                            {rank}
+                          </span>
+                          <span className="text-[12px] font-bold text-slate-800 truncate flex-1 min-w-0" title={item.name}>
+                            {item.name}
+                          </span>
+                          <span className="text-[11px] font-bold shrink-0 whitespace-nowrap">
+                            <span className="text-violet-600">{item.department}</span>
+                            <span className="text-slate-800 ml-1">{item.count}회</span>
                           </span>
                         </div>
-                        <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full rounded-full transition-all ${idx === 0 ? 'bg-rose-500' : 'bg-blue-500'}`}
-                            style={{ width: `${Math.max(row.pct, 8)}%` }}
-                          />
-                        </div>
-
-                        {isExpanded && (
-                          <div className="mt-1.5 space-y-1 pl-0.5">
-                            {borrowers.map((person) => (
-                              <div key={person.borrowerId} className="flex items-center justify-between gap-2 text-[10px]">
-                                <span className="font-medium text-slate-600 truncate">{person.name}</span>
-                                <span className="text-rose-600 font-bold shrink-0 font-mono">
-                                  {person.maxDays}일째 연체 · {person.count}건
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
                       );
                     })}
                   </div>

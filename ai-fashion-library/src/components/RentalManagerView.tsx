@@ -1,29 +1,52 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  User, ArrowUpRight, ArrowDownLeft, X, Check, Sparkles,
-  Clock, History, AlertCircle, RefreshCw, ScanLine, Barcode, CheckCircle2,
-  Search, Calendar, Trash2, Package, FileText, Printer, Download, PenLine,
+  X, Check, Clock, AlertCircle, RefreshCw, CheckCircle2,
+  Search, Package, FileText, Printer, Download, PenLine, Trash2, ChevronDown,
 } from 'lucide-react';
-import { Sample, Rental, RentalAgreement, Member, rentalStatusLabel, effectiveRentalStatus } from '../types';
+import { Sample, Rental, RentalAgreement, RentalAgreementItem, Member, Category, LossDamageReport, rentalStatusLabel, effectiveRentalStatus } from '../types';
+import { DateRangeCalendar } from './DateRangeCalendar';
+import LossDamageReportModal, { LossDamageReportSubmitPayload } from './LossDamageReportModal';
+import RentalDocumentBox from './RentalDocumentBox';
 
 interface RentalManagerViewProps {
+  viewMode: 'status' | 'documents';
   rentals: Rental[];
   rentalAgreements: RentalAgreement[];
+  lossDamageReports: LossDamageReport[];
   samples: Sample[];
   members: Member[];
+  categories?: Category[];
   onSaveDB: (newRentals: Rental[], newSamples: Sample[]) => void;
-  onRefreshData?: () => void;
-  view: 'scan' | 'status';
+  onRefreshData?: () => void | Promise<void>;
 }
 
-interface BorrowCartItem {
-  sampleCode: string;
-  sampleName: string;
-  brand: string;
-  category: string;
-  remark?: string;
-}
+type StatusTab = 'pending' | 'available' | 'active' | 'overdue' | 'bupyeong' | 'lost';
+type PendingSubTab = 'approval' | 'signature' | 'rejected';
+
+type PendingRow = {
+  rowKey: string;
+  agreement: RentalAgreement;
+  item: RentalAgreementItem;
+};
+
+const APPROVAL_STATUS_CHIPS: { id: PendingSubTab; label: string; active: string; idle: string }[] = [
+  { id: 'signature', label: '대기', active: 'bg-amber-600 text-white', idle: 'bg-amber-50 text-amber-700 hover:bg-amber-100' },
+  { id: 'approval', label: '승인', active: 'bg-violet-600 text-white', idle: 'bg-violet-50 text-violet-700 hover:bg-violet-100' },
+  { id: 'rejected', label: '반려', active: 'bg-slate-600 text-white', idle: 'bg-slate-100 text-slate-700 hover:bg-slate-200' },
+];
+
+const RENTAL_STATUS_TAB_CHIPS: { id: Exclude<StatusTab, 'pending'>; label: string; active: string; idle: string }[] = [
+  { id: 'available', label: '대여가능', active: 'bg-emerald-600 text-white', idle: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
+  { id: 'active', label: '대여 중', active: 'bg-blue-600 text-white', idle: 'bg-blue-50 text-blue-700 hover:bg-blue-100' },
+  { id: 'overdue', label: '연체', active: 'bg-rose-600 text-white', idle: 'bg-rose-50 text-rose-700 hover:bg-rose-100' },
+  { id: 'bupyeong', label: '부평보관', active: 'bg-amber-600 text-white', idle: 'bg-amber-50 text-amber-700 hover:bg-amber-100' },
+  { id: 'lost', label: '분실/훼손', active: 'bg-slate-600 text-white', idle: 'bg-slate-100 text-slate-700 hover:bg-slate-200' },
+];
+
+const TABLE_HEAD =
+  'bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider font-sans text-left';
+const TABLE_BODY = 'divide-y divide-slate-100 text-xs text-slate-700 font-medium';
 
 const AGREEMENT_TERMS = [
   '대여 샘플은 지정된 목적(기획·촬영·검수 등) 외 사용을 금하며, 훼손·오염·분실 시 즉시 담당자에게 보고해야 합니다.',
@@ -37,21 +60,6 @@ const rentPeriodLabel = (days: number) => {
   if (days % 7 === 0 && days >= 7) return `${days / 7}주`;
   return `${days}일`;
 };
-
-type ScanKind = 'borrow' | 'return' | 'error';
-interface ScanLogEntry {
-  id: string;
-  kind: ScanKind;
-  title: string;
-  sub: string;
-  time: string;
-  image?: string;     // 제품 썸네일 (data URL)
-  code?: string;      // 상품코드
-  brand?: string;     // 브랜드
-  locationNo?: string; // 위치번호
-  dueDate?: string;   // 반납 예정일
-  days?: string;      // 대여 기간(일)
-}
 
 const todayStr = () => new Date().toISOString().substring(0, 10);
 
@@ -80,47 +88,7 @@ const formatDDay = (daysLeft: number) => {
   return `D-${daysLeft}`;
 };
 
-type OverdueStage = {
-  label: string;
-  emailType: 'gentle' | 'warning' | 'strict';
-  badgeClass: string;
-};
-
-const getOverdueStage = (daysOverdue: number): OverdueStage | null => {
-  if (daysOverdue <= 0) return null;
-  if (daysOverdue <= 6) {
-    return {
-      label: '1주차 · 안내',
-      emailType: 'gentle',
-      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100',
-    };
-  }
-  if (daysOverdue <= 13) {
-    return {
-      label: '2주차 · 경고',
-      emailType: 'warning',
-      badgeClass: 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100',
-    };
-  }
-  if (daysOverdue <= 19) {
-    return {
-      label: '3주차 · 최종통보',
-      emailType: 'warning',
-      badgeClass: 'bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100',
-    };
-  }
-  return {
-    label: '4주차 · 분실/보상',
-    emailType: 'strict',
-    badgeClass: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100',
-  };
-};
-
 const renderDueSubLabel = (rental: Rental, today: string) => {
-  if (rental.status === '반납완료') {
-    const od = overdueDaysOfRental(rental, today);
-    return <span className="text-[10px] text-slate-400 font-medium mt-0.5 block">+{od}일 연체</span>;
-  }
   const effective = effectiveRentalStatus(rental, today);
   if (effective === '연체중') {
     const od = overdueDaysOfRental(rental, today);
@@ -130,216 +98,487 @@ const renderDueSubLabel = (rental: Rental, today: string) => {
   return <span className="text-[10px] text-slate-400 font-medium mt-0.5 block">{formatDDay(left)}</span>;
 };
 
+const borrowerGroupLabel = (agreement: RentalAgreement, members: Member[]) => {
+  const member = members.find((m) => m.memberId === agreement.borrowerId);
+  return member?.groupName || agreement.borrowerAffiliation;
+};
+
 export default function RentalManagerView({
+  viewMode,
   rentals,
   rentalAgreements,
+  lossDamageReports,
   samples,
   members,
-  onSaveDB,
+  categories = [],
   onRefreshData,
-  view,
 }: RentalManagerViewProps) {
-  // --- Mode: 대여 / 반납 (within the 대여/반납 tab) ----------------------
-  const [mode, setMode] = useState<'borrow' | 'return'>('borrow');
-
-  // --- Borrow workflow states -------------------------------------------
-  const [borrowerInput, setBorrowerInput] = useState('');
-  const [borrowDays, setBorrowDays] = useState('7');
-  const [borrowCode, setBorrowCode] = useState('');
-  const [returnCode, setReturnCode] = useState('');
-  const [borrowCart, setBorrowCart] = useState<BorrowCartItem[]>([]);
-  const [creatingAgreement, setCreatingAgreement] = useState(false);
-  const [signingAgreementId, setSigningAgreementId] = useState<string | null>(null);
-  const [viewAgreement, setViewAgreement] = useState<RentalAgreement | null>(null);
-  const [agreeChecked, setAgreeChecked] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const [feedback, setFeedback] = useState<{ type: 'ok' | 'error'; msg: string } | null>(null);
-
-  // --- Scan log (session) -----------------------------------------------
-  const [scanLog, setScanLog] = useState<ScanLogEntry[]>([]);
-
-  // --- Status table states ----------------------------------------------
+  const [statusTab, setStatusTab] = useState<StatusTab>('pending');
+  const [pendingSubTab, setPendingSubTab] = useState<PendingSubTab>('approval');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedStatus, setSelectedStatus] = useState('전체');
-  const [selectedRentalForHistory, setSelectedRentalForHistory] = useState<Rental | null>(null);
-  const [sendingId, setSendingId] = useState<string | null>(null);
-  // 현황판 보기 모달 (대여자별 대여중/반납 목록)
-  const [detailView, setDetailView] = useState<{ mode: 'active' | 'returned'; borrowerId: string; borrowerName: string } | null>(null);
+  const [selectedBrand, setSelectedBrand] = useState('전체');
+  const [selectedCountry, setSelectedCountry] = useState('전체');
+  const [selectedCategory, setSelectedCategory] = useState('전체');
+  const [selectedRegisterer, setSelectedRegisterer] = useState('전체');
+  const [regDateFrom, setRegDateFrom] = useState('');
+  const [regDateTo, setRegDateTo] = useState('');
+  const [regDateOpen, setRegDateOpen] = useState(false);
+  const regDateFilterRef = useRef<HTMLDivElement>(null);
+  const regDatePopoverRef = useRef<HTMLDivElement>(null);
+  const [regDatePopoverPos, setRegDatePopoverPos] = useState({ top: 0, left: 0 });
+  const [pageSize, setPageSize] = useState(20);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [signingAgreementId, setSigningAgreementId] = useState<string | null>(null);
+  const [approvingAgreementId, setApprovingAgreementId] = useState<string | null>(null);
+  const [rejectingAgreementId, setRejectingAgreementId] = useState<string | null>(null);
+  const [markingLostId, setMarkingLostId] = useState<string | null>(null);
+  const [viewAgreement, setViewAgreement] = useState<RentalAgreement | null>(null);
+  const [lossReportRental, setLossReportRental] = useState<Rental | null>(null);
+  const [viewLossReport, setViewLossReport] = useState<LossDamageReport | null>(null);
+  const [savingLossReportId, setSavingLossReportId] = useState<string | null>(null);
+  const [agreeChecked, setAgreeChecked] = useState(false);
+  const [feedback, setFeedback] = useState<{ type: 'ok' | 'error'; msg: string } | null>(null);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set());
 
-  // Refs for focus flow
-  const borrowerRef = useRef<HTMLInputElement>(null);
-  const borrowCodeRef = useRef<HTMLInputElement>(null);
-  const returnCodeRef = useRef<HTMLInputElement>(null);
-
-  // Resolve borrower live from the input (사번 / 이름 / 이메일)
-  const borrower = members.find((m) => {
-    const q = borrowerInput.trim().toLowerCase();
-    if (!q) return false;
-    return (
-      m.memberId.toLowerCase() === q ||
-      m.name.toLowerCase() === q ||
-      m.email.toLowerCase() === q
-    );
-  });
-
-  // 검색어로 직원 목록 필터 (부분 일치)
-  const filteredMembers = members.filter((m) => {
-    const q = borrowerInput.trim().toLowerCase();
-    if (!q || m.useYn !== '사용') return false;
-    return (
-      m.memberId.toLowerCase().includes(q) ||
-      m.name.toLowerCase().includes(q) ||
-      m.email.toLowerCase().includes(q) ||
-      (m.affiliation || m.groupName).toLowerCase().includes(q) ||
-      (m.brand || '').toLowerCase().includes(q)
-    );
-  }).slice(0, 8);
-
-  const overdueCountOf = (memberId: string) =>
-    rentals.filter((r) => r.borrowerId === memberId && r.status === '연체중').length;
-
-  const selectBorrower = (member: Member) => {
-    setBorrowerInput(member.memberId);
-    setBorrowCart([]);
-    window.setTimeout(() => borrowCodeRef.current?.focus(), 50);
-  };
-
-  const removeFromCart = (code: string) => {
-    setBorrowCart((prev) => prev.filter((item) => item.sampleCode !== code));
-  };
-
-  const sortedAgreements = rentalAgreements
-    .slice()
-    .sort((a, b) => {
-      if (a.signatureStatus !== b.signatureStatus) {
-        return a.signatureStatus === 'pending' ? -1 : 1;
-      }
-      return b.rentDate.localeCompare(a.rentDate);
-    });
-
-  // Keep focus on the active scan field
-  useEffect(() => {
-    if (view !== 'scan') return;
-    if (mode === 'return') {
-      returnCodeRef.current?.focus();
-    } else {
-      if (borrower) borrowCodeRef.current?.focus();
-      else borrowerRef.current?.focus();
-    }
-  }, [view, mode, borrower]);
-
-  // --- Derived summary metrics ------------------------------------------
   const today = todayStr();
-  const onLoanCount = rentals.filter((r) => effectiveRentalStatus(r, today) === '대여중').length;
-  const overdueCount = rentals.filter((r) => effectiveRentalStatus(r, today) === '연체중').length;
-  const returnedCount = rentals.filter((r) => r.status === '반납완료').length;
-
-  const pushLog = (entry: Omit<ScanLogEntry, 'id' | 'time'>) => {
-    setScanLog((prev) => [
-      {
-        ...entry,
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      },
-      ...prev,
-    ].slice(0, 30));
-  };
 
   const flashFeedback = (type: 'ok' | 'error', msg: string) => {
     setFeedback({ type, msg });
     window.setTimeout(() => setFeedback(null), 2600);
   };
 
-  // --- Add to borrow cart (scan) -----------------------------------------
-  const handleBorrowScan = (e: React.FormEvent) => {
-    e.preventDefault();
-    const code = borrowCode.trim();
+  const isAgreementApproved = (agreement: RentalAgreement) => agreement.approvalStatus === 'approved';
+  const isAgreementRejected = (agreement: RentalAgreement) => agreement.approvalStatus === 'rejected';
+  const isPendingApproval = (agreement: RentalAgreement) =>
+    !isAgreementApproved(agreement) && !isAgreementRejected(agreement);
+  const isAwaitingApproval = (agreement: RentalAgreement) =>
+    agreement.signatureStatus === 'signed' && isPendingApproval(agreement);
+  const isAwaitingSignature = (agreement: RentalAgreement) =>
+    agreement.signatureStatus === 'pending' && isPendingApproval(agreement);
 
-    if (!borrower) {
-      flashFeedback('error', '먼저 대여자(직원)를 확인해 주세요.');
-      borrowerRef.current?.focus();
-      return;
-    }
-    if (borrower.useYn !== '사용') {
-      flashFeedback('error', `${borrower.name} 님은 현재 대여 자격이 정지된 상태입니다.`);
-      return;
-    }
-    if (!code) return;
-
-    const sample = samples.find((x) => x.code === code);
-    if (!sample) {
-      flashFeedback('error', `등록되지 않은 상품 코드입니다 · ${code}`);
-      setBorrowCode('');
-      borrowCodeRef.current?.focus();
-      return;
-    }
-    if (sample.status !== '대여가능') {
-      flashFeedback('error', `${sample.code}는 현재 대여 가능한 상태가 아닙니다. (${sample.status})`);
-      setBorrowCode('');
-      borrowCodeRef.current?.focus();
-      return;
-    }
-    if (borrowCart.some((item) => item.sampleCode === code)) {
-      flashFeedback('error', '이미 장바구니에 담긴 샘플입니다.');
-      setBorrowCode('');
-      borrowCodeRef.current?.focus();
-      return;
-    }
-
-    setBorrowCart((prev) => [
-      ...prev,
-      {
-        sampleCode: sample.code,
-        sampleName: sample.name,
-        brand: sample.brand,
-        category: sample.category || sample.classification || '-',
-        remark: sample.season || '',
-      },
-    ]);
-    flashFeedback('ok', `장바구니 추가 · ${sample.name}`);
-    setBorrowCode('');
-    borrowCodeRef.current?.focus();
+  const matchSearch = (query: string, ...values: (string | undefined)[]) => {
+    if (!query.trim()) return true;
+    const q = query.toLowerCase();
+    return values.some((v) => (v || '').toLowerCase().includes(q));
   };
 
-  const handleCreateAgreement = async () => {
-    if (!borrower) {
-      flashFeedback('error', '대여자를 먼저 확인해 주세요.');
-      return;
-    }
-    if (borrowCart.length === 0) {
-      flashFeedback('error', '스캔한 샘플이 없습니다. 바코드를 스캔해 주세요.');
-      return;
-    }
+  const getRegDateKey = (dateStr?: string) => (dateStr || '').substring(0, 10);
+  const regDateFilterLabel =
+    !regDateFrom && !regDateTo
+      ? '등록일: 전체'
+      : regDateFrom && regDateTo && regDateFrom === regDateTo
+        ? `등록일: ${regDateFrom}`
+        : `등록일: ${regDateFrom || '…'} ~ ${regDateTo || '…'}`;
 
-    setCreatingAgreement(true);
-    try {
-      const res = await fetch('/api/rental-agreements', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          borrowerId: borrower.memberId,
-          rentDays: borrowDays,
-          purpose: '샘플 대여',
-          items: borrowCart.map((item) => ({ sampleCode: item.sampleCode, remark: item.remark })),
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        flashFeedback('ok', `동의서 ${data.agreement.agreementId} 작성 · 전자서명 후 대여 처리됩니다.`);
-        setBorrowCart([]);
-        setViewAgreement(data.agreement);
-        setAgreeChecked(false);
-        onRefreshData?.();
+  const CATEGORY_ORDER = ['오리지널', '유형화샘플', 'EP샘플', '자사샘플', '중국샘플'];
+  const sortByCategoryOrder = (arr: string[]) =>
+    [...arr].sort((a, b) => {
+      const ia = CATEGORY_ORDER.indexOf(a);
+      const ib = CATEGORY_ORDER.indexOf(b);
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    });
+  const topLevelCategoryNames = sortByCategoryOrder(
+    categories.filter((c) => c.useYn === '사용' && !c.parentId).map((c) => c.name)
+  );
+  const categoryFilterOptions =
+    topLevelCategoryNames.length > 0
+      ? topLevelCategoryNames
+      : sortByCategoryOrder(['오리지널', '유형화샘플', 'EP샘플', '자사샘플', '중국샘플']);
+
+  const sampleOf = (code: string) => samples.find((s) => s.code === code);
+
+  const sampleCountryOf = (s: Sample | undefined) =>
+    s && (s.country === 'CN' || s.category === '중국샘플') ? '중국' : '한국';
+
+  const sampleCategoryOf = (s: Sample | undefined, itemCategory?: string) => {
+    const cat = s?.category || itemCategory || '';
+    return cat === '중국샘플' ? '유형화샘플' : cat;
+  };
+
+  const matchesDetailFilters = (
+    sampleCode: string,
+    opts?: { brand?: string; itemCategory?: string; dateFallback?: string }
+  ) => {
+    const s = sampleOf(sampleCode);
+    const brand = s?.brand || opts?.brand || '';
+    const sampleDate = getRegDateKey(s?.regDate || opts?.dateFallback);
+    const category = sampleCategoryOf(s, opts?.itemCategory);
+
+    if (selectedBrand !== '전체' && brand !== selectedBrand) return false;
+    if (selectedCountry !== '전체' && sampleCountryOf(s) !== selectedCountry) return false;
+    if (selectedCategory !== '전체' && category !== selectedCategory) return false;
+    if (selectedRegisterer !== '전체' && (s?.registerer || '') !== selectedRegisterer) return false;
+    if (regDateFrom && (!sampleDate || sampleDate < regDateFrom)) return false;
+    if (regDateTo && (!sampleDate || sampleDate > regDateTo)) return false;
+    return true;
+  };
+
+  const relatedSamples = useMemo(() => samples, [samples]);
+
+  const uniqueBrands = useMemo(
+    () => ['전체', ...Array.from(new Set(relatedSamples.map((s) => s.brand).filter(Boolean))).sort()],
+    [relatedSamples]
+  );
+  const uniqueRegisterers = useMemo(
+    () => ['전체', ...Array.from(new Set(relatedSamples.map((s) => s.registerer).filter(Boolean))).sort()],
+    [relatedSamples]
+  );
+
+  const filterAgreementsBySearch = (agreements: RentalAgreement[]) =>
+    agreements
+      .filter((agreement) => {
+        const first = agreement.items[0];
+        return matchSearch(
+          searchQuery,
+          agreement.agreementId,
+          agreement.borrowerName,
+          agreement.brand,
+          first?.sampleName,
+          first?.sampleCode
+        );
+      })
+      .sort((a, b) => (b.createdAt || b.rentDate).localeCompare(a.createdAt || a.rentDate));
+
+  const baseAwaitingApprovalAgreements = filterAgreementsBySearch(rentalAgreements.filter(isAwaitingApproval));
+  const baseAwaitingSignatureAgreements = filterAgreementsBySearch(rentalAgreements.filter(isAwaitingSignature));
+  const baseRejectedAgreements = filterAgreementsBySearch(rentalAgreements.filter(isAgreementRejected));
+
+  const baseActiveRentals = rentals
+    .filter((r) => effectiveRentalStatus(r, today) === '대여중')
+    .filter((r) =>
+      matchSearch(searchQuery, r.rentalId, r.sampleCode, r.sampleName, r.borrowerName, r.sampleBrand, r.borrowerGroup)
+    )
+    .sort((a, b) => b.rentDate.localeCompare(a.rentDate));
+
+  const baseOverdueRentals = rentals
+    .filter((r) => effectiveRentalStatus(r, today) === '연체중')
+    .filter((r) =>
+      matchSearch(searchQuery, r.rentalId, r.sampleCode, r.sampleName, r.borrowerName, r.sampleBrand, r.borrowerGroup)
+    )
+    .sort((a, b) => overdueDaysOfRental(b, today) - overdueDaysOfRental(a, today));
+
+  const lastRentalOfSample = (code: string) =>
+    rentals
+      .filter((r) => r.sampleCode === code)
+      .sort((a, b) => (b.returnDate || b.rentDate).localeCompare(a.returnDate || a.rentDate))[0];
+
+  const buildBaseSamples = (status: Sample['status']) =>
+    samples
+      .filter((s) => s.status === status)
+      .filter((s) => matchSearch(searchQuery, s.code, s.name, s.brand, s.registerer, s.category))
+      .sort((a, b) => getRegDateKey(b.regDate).localeCompare(getRegDateKey(a.regDate)));
+
+  const baseAvailableSamples = buildBaseSamples('대여가능');
+  const baseBupyeongSamples = buildBaseSamples('부평보관');
+  const baseLostSamples = samples
+    .filter((s) => s.status === '분실')
+    .filter((s) => {
+      const last = lastRentalOfSample(s.code);
+      return matchSearch(
+        searchQuery,
+        s.code,
+        s.name,
+        s.brand,
+        s.registerer,
+        last?.borrowerName,
+        last?.borrowerGroup,
+        last?.rentalId
+      );
+    })
+    .sort((a, b) => {
+      const ra = lastRentalOfSample(a.code);
+      const rb = lastRentalOfSample(b.code);
+      return (rb?.returnDate || rb?.rentDate || '').localeCompare(ra?.returnDate || ra?.rentDate || '');
+    });
+
+  const buildPendingRows = (agreements: RentalAgreement[]): PendingRow[] =>
+    agreements.flatMap((agreement) =>
+      agreement.items
+        .filter((item) =>
+          matchesDetailFilters(item.sampleCode, {
+            brand: item.brand,
+            itemCategory: item.category,
+            dateFallback: agreement.createdAt || agreement.rentDate,
+          })
+        )
+        .map((item) => ({
+          rowKey: `${agreement.agreementId}-${item.sampleCode}`,
+          agreement,
+          item,
+        }))
+    );
+
+  const approvalPendingRows = buildPendingRows(baseAwaitingApprovalAgreements);
+  const signaturePendingRows = buildPendingRows(baseAwaitingSignatureAgreements);
+  const rejectedPendingRows = buildPendingRows(baseRejectedAgreements);
+
+  const pendingSubTabCounts = {
+    approval: approvalPendingRows.length,
+    signature: signaturePendingRows.length,
+    rejected: rejectedPendingRows.length,
+  };
+
+  const selectPendingSubTab = (sub: PendingSubTab) => {
+    setStatusTab('pending');
+    setPendingSubTab(sub);
+    setSelectedRowKeys(new Set());
+    setCurrentPage(1);
+  };
+
+  const selectRentalStatusTab = (tab: Exclude<StatusTab, 'pending'>) => {
+    setStatusTab(tab);
+    setSelectedRowKeys(new Set());
+    setCurrentPage(1);
+  };
+
+  const pendingRows =
+    pendingSubTab === 'approval'
+      ? approvalPendingRows
+      : pendingSubTab === 'signature'
+        ? signaturePendingRows
+        : rejectedPendingRows;
+
+  const tabCounts = {
+    available: baseAvailableSamples.length,
+    active: baseActiveRentals.length,
+    overdue: baseOverdueRentals.length,
+    bupyeong: baseBupyeongSamples.length,
+    lost: baseLostSamples.length,
+  };
+
+  const activeRentals = baseActiveRentals.filter((r) =>
+    matchesDetailFilters(r.sampleCode, { brand: r.sampleBrand, dateFallback: r.rentDate })
+  );
+
+  const overdueRentals = baseOverdueRentals.filter((r) =>
+    matchesDetailFilters(r.sampleCode, { brand: r.sampleBrand, dateFallback: r.rentDate })
+  );
+
+  const availableSamples = baseAvailableSamples.filter((s) =>
+    matchesDetailFilters(s.code, { brand: s.brand, dateFallback: s.regDate })
+  );
+
+  const bupyeongSamples = baseBupyeongSamples.filter((s) =>
+    matchesDetailFilters(s.code, { brand: s.brand, dateFallback: s.regDate })
+  );
+
+  const lostSamples = baseLostSamples.filter((s) =>
+    matchesDetailFilters(s.code, { brand: s.brand, dateFallback: s.regDate })
+  );
+
+  const currentListCount =
+    statusTab === 'pending'
+      ? pendingRows.length
+      : statusTab === 'available'
+        ? availableSamples.length
+        : statusTab === 'active'
+          ? activeRentals.length
+          : statusTab === 'overdue'
+            ? overdueRentals.length
+            : statusTab === 'bupyeong'
+              ? bupyeongSamples.length
+              : lostSamples.length;
+
+  const totalPages = Math.max(1, Math.ceil(currentListCount / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const pagedPendingRows = pendingRows.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pagedActiveRentals = activeRentals.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pagedOverdueRentals = overdueRentals.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pagedAvailableSamples = availableSamples.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pagedBupyeongSamples = bupyeongSamples.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pagedLostSamples = lostSamples.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedBrand, selectedCountry, selectedCategory, selectedRegisterer, regDateFrom, regDateTo, statusTab, pendingSubTab, pageSize]);
+
+  useEffect(() => {
+    if (!regDateOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (regDateFilterRef.current?.contains(t) || regDatePopoverRef.current?.contains(t)) return;
+      setRegDateOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [regDateOpen]);
+
+  const resetAllFilters = () => {
+    setSearchQuery('');
+    setSelectedBrand('전체');
+    setSelectedCountry('전체');
+    setSelectedCategory('전체');
+    setSelectedRegisterer('전체');
+    setRegDateFrom('');
+    setRegDateTo('');
+    setRegDateOpen(false);
+    setSelectedRowKeys(new Set());
+    setCurrentPage(1);
+  };
+
+  const handleExcelDownload = () => {
+    const esc = (v: unknown) => {
+      const str = v == null ? '' : String(v);
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+
+    let headers: string[] = [];
+    let rows: string[][] = [];
+
+    if (statusTab === 'pending') {
+      if (pendingSubTab === 'rejected') {
+        headers = ['상품코드', '상품명', '브랜드', '대여자', '신청일', '대여기간', '서명', '반려일', '반려자'];
+        rows = pendingRows.map(({ agreement, item }) => [
+          item.sampleCode,
+          item.sampleName,
+          item.brand || agreement.brand,
+          agreement.borrowerName,
+          agreement.createdAt || agreement.rentDate,
+          rentPeriodLabel(agreement.rentDays),
+          agreement.signatureStatus === 'signed' ? '서명완료' : '서명대기',
+          agreement.rejectedAt || '-',
+          agreement.rejectedBy || '-',
+        ]);
       } else {
-        flashFeedback('error', data.message || '동의서 작성에 실패했습니다.');
+        headers = ['상품코드', '상품명', '브랜드', '대여자', '신청일', '대여기간', '서명', '처리상태'];
+        rows = pendingRows.map(({ agreement, item }) => [
+          item.sampleCode,
+          item.sampleName,
+          item.brand || agreement.brand,
+          agreement.borrowerName,
+          agreement.createdAt || agreement.rentDate,
+          rentPeriodLabel(agreement.rentDays),
+          agreement.signatureStatus === 'signed' ? '서명완료' : '서명대기',
+          pendingSubTab === 'approval' ? '승인 대기' : '서명 대기',
+        ]);
       }
-    } catch (err) {
-      console.error(err);
-      flashFeedback('error', '동의서 작성 중 오류가 발생했습니다.');
-    } finally {
-      setCreatingAgreement(false);
+    } else if (statusTab === 'active') {
+      headers = ['대여번호', '상품코드', '상품명', '브랜드', '대여자', '대여일', '반납예정', '상태'];
+      rows = activeRentals.map((r) => [
+        r.rentalId,
+        r.sampleCode,
+        r.sampleName,
+        r.sampleBrand,
+        r.borrowerName,
+        r.rentDate,
+        r.dueDate,
+        rentalStatusLabel(effectiveRentalStatus(r, today)),
+      ]);
+    } else if (statusTab === 'available' || statusTab === 'bupyeong') {
+      const list = statusTab === 'available' ? availableSamples : bupyeongSamples;
+      const statusLabel = statusTab === 'available' ? '대여가능' : '부평보관';
+      headers = ['상품코드', '상품명', '브랜드', '카테고리', '등록일', '등록자', '상태'];
+      rows = list.map((s) => [
+        s.code,
+        s.name,
+        s.brand,
+        s.category,
+        getRegDateKey(s.regDate),
+        s.registerer,
+        statusLabel,
+      ]);
+    } else if (statusTab === 'lost') {
+      headers = ['상품코드', '상품명', '브랜드', '대여자', '대여일', '처리일', '상태'];
+      rows = lostSamples.map((s) => {
+        const last = lastRentalOfSample(s.code);
+        return [
+          s.code,
+          s.name,
+          s.brand,
+          last?.borrowerName || '-',
+          last?.rentDate || '-',
+          last?.returnDate || '-',
+          '분실',
+        ];
+      });
+    } else {
+      headers = ['대여번호', '상품코드', '상품명', '브랜드', '대여자', '대여일', '반납예정', '연체일'];
+      rows = overdueRentals.map((r) => [
+        r.rentalId,
+        r.sampleCode,
+        r.sampleName,
+        r.sampleBrand,
+        r.borrowerName,
+        r.rentDate,
+        r.dueDate,
+        `${overdueDaysOfRental(r, today)}일`,
+      ]);
     }
+
+    if (rows.length === 0) {
+      alert('다운로드할 데이터가 없습니다.');
+      return;
+    }
+
+    const csv = [headers.map(esc).join(','), ...rows.map((row) => row.map(esc).join(','))].join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download =
+      statusTab === 'pending'
+        ? `대여반납_${statusTab}_${pendingSubTab}_${today}.csv`
+        : `대여반납_${statusTab}_${today}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
+
+  const currentRowKeys =
+    statusTab === 'pending'
+      ? pendingRows.map((r) => r.rowKey)
+      : statusTab === 'available'
+        ? availableSamples.map((s) => s.code)
+        : statusTab === 'active'
+          ? activeRentals.map((r) => r.rentalId)
+          : statusTab === 'overdue'
+            ? overdueRentals.map((r) => r.rentalId)
+            : statusTab === 'bupyeong'
+              ? bupyeongSamples.map((s) => s.code)
+              : lostSamples.map((s) => s.code);
+
+  const allCurrentSelected = currentRowKeys.length > 0 && currentRowKeys.every((k) => selectedRowKeys.has(k));
+
+  const toggleSelectAll = () => {
+    setSelectedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (allCurrentSelected) {
+        currentRowKeys.forEach((k) => next.delete(k));
+      } else {
+        currentRowKeys.forEach((k) => next.add(k));
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectRow = (key: string) => {
+    setSelectedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const sampleThumb = (code: string) => {
+    const s = sampleOf(code);
+    return s?.imgFrontClean || s?.imgFront || s?.imgFlat || s?.imgBackClean || s?.imgBack;
+  };
+
+  const renderSampleImage = (code: string, alt: string) => {
+    const thumb = sampleThumb(code);
+    return (
+      <div className="w-16 h-20 rounded-md bg-slate-50 overflow-hidden inline-flex items-center justify-center border-0">
+        {thumb ? (
+          <img src={thumb} referrerPolicy="no-referrer" alt={alt} className="w-full h-full object-cover" />
+        ) : (
+          <Package className="w-5 h-5 text-slate-300" />
+        )}
+      </div>
+    );
+  };
+
+  const findAgreement = (rental: Rental) =>
+    rental.agreementId ? rentalAgreements.find((a) => a.agreementId === rental.agreementId) : undefined;
 
   const handleSignAgreement = async (agreement: RentalAgreement) => {
     if (!agreeChecked) {
@@ -355,26 +594,12 @@ export default function RentalManagerView({
       });
       const data = await res.json();
       if (data.success) {
-        flashFeedback('ok', data.message || '전자서명 완료 · 대여 처리되었습니다.');
-        for (const rental of data.rentals || []) {
-          const s = samples.find((x) => x.code === rental.sampleCode);
-          pushLog({
-            kind: 'borrow',
-            title: rental.sampleName || '샘플',
-            sub: `${agreement.borrowerName} · ${agreement.borrowerAffiliation}`,
-            image: s?.imgFrontClean || s?.imgFront || s?.imgFlat || s?.imgBackClean || s?.imgBack,
-            code: rental.sampleCode,
-            brand: s?.brand || rental.sampleBrand,
-            locationNo: s?.locationNo,
-            dueDate: rental.dueDate,
-            days: String(agreement.rentDays),
-          });
-        }
+        flashFeedback('ok', data.message || '전자서명이 완료되었습니다.');
         setViewAgreement(data.agreement);
         setAgreeChecked(false);
         onRefreshData?.();
       } else {
-        flashFeedback('error', data.message || '전자서명 및 대여 처리에 실패했습니다.');
+        flashFeedback('error', data.message || '전자서명에 실패했습니다.');
       }
     } catch (err) {
       console.error(err);
@@ -384,1068 +609,988 @@ export default function RentalManagerView({
     }
   };
 
+  const handleApproveAgreement = async (agreement: RentalAgreement) => {
+    if (agreement.signatureStatus !== 'signed') {
+      setViewAgreement(agreement);
+      flashFeedback('error', '전자서명 완료 후 승인할 수 있습니다.');
+      return;
+    }
+    if (!confirm(`${agreement.borrowerName} 님 대여 신청(${agreement.agreementId})을 승인하시겠습니까?`)) return;
+
+    setApprovingAgreementId(agreement.agreementId);
+    try {
+      const res = await fetch(`/api/rental-agreements/${agreement.agreementId}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approvedBy: '관리자' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        flashFeedback('ok', data.message || '대여 승인이 완료되었습니다.');
+        if (viewAgreement?.agreementId === agreement.agreementId) {
+          setViewAgreement(data.agreement);
+        }
+        onRefreshData?.();
+      } else {
+        flashFeedback('error', data.message || '대여 승인에 실패했습니다.');
+      }
+    } catch (err) {
+      console.error(err);
+      flashFeedback('error', '대여 승인 처리 중 오류가 발생했습니다.');
+    } finally {
+      setApprovingAgreementId(null);
+    }
+  };
+
+  const handleRejectAgreement = async (agreement: RentalAgreement) => {
+    if (!confirm(`${agreement.borrowerName} 님 대여 신청(${agreement.agreementId})을 반려하시겠습니까?`)) return;
+
+    setRejectingAgreementId(agreement.agreementId);
+    try {
+      const res = await fetch(`/api/rental-agreements/${agreement.agreementId}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rejectedBy: '관리자' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        flashFeedback('ok', data.message || '대여 신청이 반려되었습니다.');
+        if (viewAgreement?.agreementId === agreement.agreementId) {
+          setViewAgreement(null);
+        }
+        setPendingSubTab('rejected');
+        setSelectedRowKeys(new Set());
+        setCurrentPage(1);
+        onRefreshData?.();
+      } else {
+        flashFeedback('error', data.message || '반려 처리에 실패했습니다.');
+      }
+    } catch (err) {
+      console.error(err);
+      flashFeedback('error', '반려 처리 중 오류가 발생했습니다.');
+    } finally {
+      setRejectingAgreementId(null);
+    }
+  };
+
+  const findLossReport = (sampleCode: string) =>
+    lossDamageReports
+      .filter((r) => r.sampleCode === sampleCode)
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0];
+
+  const handleMarkLostDamage = (rental: Rental) => {
+    setLossReportRental(rental);
+  };
+
+  const updateLossDamageReport = async (reportId: string, payload: LossDamageReportSubmitPayload) => {
+    setSavingLossReportId(reportId);
+    try {
+      const res = await fetch(`/api/loss-damage-reports/${reportId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success) {
+        flashFeedback('ok', data.message || '사유서가 저장되었습니다.');
+        if (data.report) setViewLossReport(data.report);
+        await onRefreshData?.();
+      } else {
+        flashFeedback('error', data.message || '저장에 실패했습니다.');
+      }
+    } catch (err) {
+      console.error(err);
+      flashFeedback('error', '사유서 저장 중 오류가 발생했습니다.');
+    } finally {
+      setSavingLossReportId(null);
+    }
+  };
+
+  const submitLossDamageReport = async (payload: LossDamageReportSubmitPayload) => {
+    if (!lossReportRental) return;
+
+    setMarkingLostId(lossReportRental.rentalId);
+    try {
+      const res = await fetch(`/api/rentals/${lossReportRental.rentalId}/mark-lost`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success) {
+        flashFeedback('ok', data.message || '분실/훼손 처리 및 사유서가 등록되었습니다.');
+        setLossReportRental(null);
+        setStatusTab('lost');
+        setSelectedRowKeys(new Set());
+        setCurrentPage(1);
+        await onRefreshData?.();
+      } else {
+        flashFeedback('error', data.message || '처리에 실패했습니다.');
+      }
+    } catch (err) {
+      console.error(err);
+      flashFeedback('error', '분실/훼손 처리 중 오류가 발생했습니다.');
+    } finally {
+      setMarkingLostId(null);
+    }
+  };
+
   const openAgreementModal = (agreement: RentalAgreement) => {
     setViewAgreement(agreement);
     setAgreeChecked(agreement.signatureStatus === 'signed');
   };
 
-  // --- Return handler ----------------------------------------------------
-  const handleReturnScan = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const code = returnCode.trim();
-    if (!code) return;
-
-    const rental = rentals.find(
-      (r) => r.sampleCode === code && (r.status === '대여중' || r.status === '연체중')
+  const renderAgreementCell = (rental: Rental) => {
+    const agreement = findAgreement(rental);
+    if (!agreement) {
+      return <span className="text-slate-300 text-[11px]">-</span>;
+    }
+    if (agreement.signatureStatus === 'pending') {
+      return (
+        <button
+          type="button"
+          onClick={() => openAgreementModal(agreement)}
+          className="inline-flex items-center gap-1 text-[11px] font-bold text-violet-600 hover:text-violet-800 cursor-pointer"
+        >
+          <FileText className="w-3.5 h-3.5" />
+          서명대기
+        </button>
+      );
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => openAgreementModal(agreement)}
+        className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 hover:text-indigo-600 cursor-pointer"
+      >
+        <FileText className="w-3.5 h-3.5" />
+        보기
+      </button>
     );
-
-    if (!rental) {
-      flashFeedback('error', `대여중인 항목을 찾을 수 없습니다 · ${code}`);
-      pushLog({ kind: 'error', title: `${code} 반납 실패`, sub: '대여중 상태가 아니거나 미등록 코드' });
-      setReturnCode('');
-      returnCodeRef.current?.focus();
-      return;
-    }
-
-    setProcessing(true);
-    try {
-      const res = await fetch('/api/rentals/return', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rentalId: rental.rentalId }),
-      });
-      const data = await res.json();
-
-      if (data.success) {
-        const s = samples.find((x) => x.code === code);
-        flashFeedback('ok', `반납 완료 · ${rental.sampleName}`);
-        pushLog({
-          kind: 'return',
-          title: rental.sampleName,
-          sub: `${rental.borrowerName} · ${rental.borrowerGroup}`,
-          image: s?.imgFrontClean || s?.imgFront || s?.imgFlat || s?.imgBackClean || s?.imgBack,
-          code,
-          brand: s?.brand || rental.sampleBrand,
-          locationNo: s?.locationNo,
-          dueDate: rental.dueDate,
-        });
-        setReturnCode('');
-        onRefreshData?.();
-      } else {
-        flashFeedback('error', data.message || '반납 처리에 실패했습니다.');
-        pushLog({ kind: 'error', title: `${code} 반납 실패`, sub: data.message || '' });
-        setReturnCode('');
-      }
-    } catch (err) {
-      console.error(err);
-      flashFeedback('error', '반납 처리 통신 오류가 발생했습니다.');
-    } finally {
-      setProcessing(false);
-      returnCodeRef.current?.focus();
-    }
   };
 
-  // --- AI overdue reminder ----------------------------------------------
-  const handleSendAutomatedEmail = async (rental: Rental, emailType?: 'gentle' | 'warning' | 'strict') => {
-    const daysOverdue = overdueDaysOfRental(rental, today);
-    const stage = getOverdueStage(daysOverdue);
-    const tone = emailType || stage?.emailType || (rental.notifyCount > 0 ? 'warning' : 'gentle');
-    const stageLabel = stage?.label || '반납 안내';
-
-    if (!confirm(`${rental.borrowerName} 님에게 [${stageLabel}] 메일을 발송하시겠습니까?`)) return;
-
-    setSendingId(rental.rentalId);
-    try {
-      const draftRes = await fetch('/api/agent/draft-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          borrowerName: rental.borrowerName,
-          borrowerGroup: rental.borrowerGroup,
-          sampleName: rental.sampleName,
-          sampleCode: rental.sampleCode,
-          dueDate: rental.dueDate,
-          daysOverdue: Math.max(1, daysOverdue),
-          emailType: tone,
-        }),
-      });
-      const draftData = await draftRes.json();
-
-      const sendRes = await fetch('/api/agent/send-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          rentalId: rental.rentalId,
-          subject: draftData.subject || '[반납 촉구 안내] 의류 샘플 반납 기한 경과 안내',
-          content: draftData.content || `안녕하세요, ${rental.borrowerName}님.\n\n대여 중인 의류 샘플의 빠른 반납 부탁드립니다.`,
-        }),
-      });
-      const sendData = await sendRes.json();
-      if (sendData.success) {
-        flashFeedback('ok', `${rental.borrowerName} 님께 독촉 메일을 발송했습니다.`);
-        onRefreshData?.();
-      } else {
-        alert('발송 실패: ' + sendData.message);
-      }
-    } catch (err) {
-      console.error(err);
-      alert('자동 독촉 메일 전송 중 오류가 발생했습니다.');
-    } finally {
-      setSendingId(null);
+  const renderPendingActions = (agreement: RentalAgreement) => {
+    if (pendingSubTab === 'signature') {
+      return (
+        <span className="text-[11px] font-bold text-amber-700 whitespace-nowrap">대여자 서명 대기</span>
+      );
     }
+    if (pendingSubTab === 'rejected') {
+      return <span className="text-slate-300 text-[11px]">—</span>;
+    }
+
+    const isApproving = approvingAgreementId === agreement.agreementId;
+    const isRejecting = rejectingAgreementId === agreement.agreementId;
+    return (
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <button
+          type="button"
+          onClick={() => handleApproveAgreement(agreement)}
+          disabled={isApproving || isRejecting}
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold disabled:opacity-50 cursor-pointer"
+        >
+          {isApproving ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+          승인
+        </button>
+        <button
+          type="button"
+          onClick={() => handleRejectAgreement(agreement)}
+          disabled={isApproving || isRejecting}
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 text-[10px] font-extrabold disabled:opacity-50 cursor-pointer"
+        >
+          {isRejecting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+          반려
+        </button>
+      </div>
+    );
   };
 
-  // --- Filtered status table --------------------------------------------
-  const filteredRentals = rentals
-    .filter((r) => {
-      const q = searchQuery.toLowerCase();
-      const matchSearch =
-        !q ||
-        r.sampleCode.toLowerCase().includes(q) ||
-        r.sampleName.toLowerCase().includes(q) ||
-        r.borrowerName.toLowerCase().includes(q) ||
-        r.borrowerGroup.toLowerCase().includes(q) ||
-        r.borrowerId.toLowerCase().includes(q);
-      const matchStatus = selectedStatus === '전체' || effectiveRentalStatus(r, today) === selectedStatus;
-      return matchSearch && matchStatus;
-    })
-    .slice()
-    .reverse();
+  const pendingEmptyMessage =
+    pendingSubTab === 'approval'
+      ? '승인 대기 중인 대여 신청이 없습니다.'
+      : pendingSubTab === 'signature'
+        ? '서명 대기 중인 대여 신청이 없습니다.'
+        : '반려된 대여 신청이 없습니다.';
 
-  // --- 보기 모달용 대여자별 목록 -----------------------------------------
-  const feeOf = (code: string) => {
-    const s = samples.find((x) => x.code === code);
-    return {
-      rental: s?.rentalFee ?? 15000,
-      o1: s?.overdueFee1 ?? 10000,
-      o2: s?.overdueFee2 ?? 20000,
-    };
+  const pendingTableColSpan = pendingSubTab === 'rejected' ? 14 : 13;
+
+  const renderPendingAgreementCell = (agreement: RentalAgreement) => (
+    <button
+      type="button"
+      onClick={() => openAgreementModal(agreement)}
+      className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 px-2 py-1 rounded-lg cursor-pointer"
+    >
+      <FileText className="w-3.5 h-3.5" />
+      보기
+    </button>
+  );
+
+  const inventoryStatusBadgeClass = (status: Sample['status']) => {
+    if (status === '대여가능') return 'bg-emerald-50 text-emerald-700 border-emerald-100';
+    if (status === '부평보관') return 'bg-amber-50 text-amber-700 border-amber-100';
+    return 'bg-slate-100 text-slate-700 border-slate-200';
   };
-  // 연체일 계산: 반납완료면 (반납일 - 반납예정일), 대여중/연체이면 (기준일 - 반납예정일), 음수면 0
-  const overdueDaysOf = (r: Rental): number => overdueDaysOfRental(r, today);
-  const detailRows = detailView
-    ? rentals.filter(
-        (r) =>
-          r.borrowerId === detailView.borrowerId &&
-          (detailView.mode === 'active'
-            ? r.status === '대여중' || r.status === '연체중'
-            : r.status === '반납완료')
-      )
-    : [];
+
+  const renderInventorySampleTable = (
+    tabId: 'available' | 'bupyeong',
+    list: Sample[],
+    pagedList: Sample[],
+    emptyMessage: string,
+    statusLabel: Sample['status']
+  ) => (
+    <div className="overflow-x-auto" id={`rental-${tabId}-table-wrap`}>
+      <table className="w-full text-left border-collapse" id={`rental-${tabId}-table`}>
+        <thead>
+          <tr className={TABLE_HEAD}>
+            <th className="py-3 px-3 text-center w-10">
+              <input
+                type="checkbox"
+                checked={allCurrentSelected}
+                onChange={toggleSelectAll}
+                className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                title="전체 선택"
+              />
+            </th>
+            <th className="py-3 pl-2.5 pr-1 w-8 whitespace-nowrap">번호</th>
+            <th className="py-3 px-2.5 whitespace-nowrap">상품코드</th>
+            <th className="py-3 px-2.5 whitespace-nowrap">상품 이미지</th>
+            <th className="py-3 px-2.5 whitespace-nowrap">상품명</th>
+            <th className="py-3 px-2.5 whitespace-nowrap">카테고리</th>
+            <th className="py-3 px-2.5 whitespace-nowrap">브랜드</th>
+            <th className="py-3 px-2.5 whitespace-nowrap">등록일</th>
+            <th className="py-3 px-2.5 whitespace-nowrap">등록자</th>
+            <th className="py-3 px-2.5 whitespace-nowrap">상태</th>
+          </tr>
+        </thead>
+        <tbody className={TABLE_BODY}>
+          {list.length === 0 ? (
+            <tr>
+              <td colSpan={10} className="py-20 text-center text-slate-400">
+                {emptyMessage}
+              </td>
+            </tr>
+          ) : (
+            pagedList.map((sample, index) => {
+              const rowNo = (safePage - 1) * pageSize + index + 1;
+              return (
+                <tr
+                  key={sample.code}
+                  className={`hover:bg-slate-50/70 transition-colors ${selectedRowKeys.has(sample.code) ? 'bg-violet-50/40' : ''}`}
+                >
+                  <td className="py-3.5 px-3 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedRowKeys.has(sample.code)}
+                      onChange={() => toggleSelectRow(sample.code)}
+                      className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                    />
+                  </td>
+                  <td className="py-3.5 pl-2.5 pr-1 font-mono text-slate-400 text-[11px]">{rowNo}</td>
+                  <td className="py-3.5 px-2.5 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">{sample.code}</td>
+                  <td className="py-3.5 px-2.5">{renderSampleImage(sample.code, sample.name)}</td>
+                  <td className="py-3.5 px-2.5">
+                    <div className="font-semibold text-slate-800 max-w-[190px] truncate" title={sample.name}>
+                      {sample.name}
+                    </div>
+                  </td>
+                  <td className="py-3.5 px-2.5">
+                    <span className="text-xs text-slate-600 bg-slate-100 py-0.5 px-2 rounded-md font-medium">
+                      {sample.category || '-'}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">{sample.brand}</td>
+                  <td className="py-3.5 px-2.5 font-mono text-slate-400 text-[11px] whitespace-nowrap">{getRegDateKey(sample.regDate)}</td>
+                  <td className="py-3.5 px-2.5 text-slate-700 whitespace-nowrap">{sample.registerer || '-'}</td>
+                  <td className="py-3.5 px-2.5">
+                    <span className={`text-[11px] font-bold py-1 px-2.5 rounded-full border ${inventoryStatusBadgeClass(statusLabel)}`}>
+                      {statusLabel}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
 
   return (
-    <div className="space-y-6" id="rental-manager-root">
+    <div className="space-y-4" id="rental-manager-root">
+      {feedback && (
+        <div
+          className={`px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 ${
+            feedback.type === 'ok'
+              ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+              : 'bg-rose-50 text-rose-700 border border-rose-100'
+          }`}
+        >
+          {feedback.type === 'ok' ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+          {feedback.msg}
+        </div>
+      )}
 
-      {/* ============ 스캔 워크스페이스 (대여 / 반납) ============ */}
-      {view === 'scan' && (
+      {viewMode === 'status' && (
       <>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" id="rental-scan-workspace">
-
-        {/* Left: 대여 / 반납 스캐너 (col-span-2) */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden" id="scanner-panel">
-
-          {/* Mode toggle */}
-          <div className="flex p-1.5 gap-1.5 bg-slate-50 border-b border-slate-100">
+      <div className="space-y-4 bg-white p-5 rounded-2xl border border-slate-200/60 shadow-3xs" id="rentals-filter-panel">
+        <div className="relative">
+          <Search className="absolute left-3.5 top-2.5 w-4 h-4 text-slate-400" />
+          <input
+            type="text"
+            placeholder="검색 (상품코드, 상품명, 대여자, 대여번호)"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-2.5 bg-slate-100/70 border-0 hover:bg-slate-100 focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-violet-500 rounded-xl text-xs font-medium placeholder:text-slate-400 transition-all font-sans"
+          />
+          {searchQuery && (
             <button
-              onClick={() => setMode('borrow')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
-                mode === 'borrow' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-white'
-              }`}
-              id="btn-mode-borrow"
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-2.5 p-0.5 hover:bg-slate-200 rounded-full cursor-pointer"
             >
-              <ArrowUpRight className="w-4 h-4" />
-              대여하기
+              <X className="w-3.5 h-3.5 text-slate-400" />
             </button>
-            <button
-              onClick={() => setMode('return')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
-                mode === 'return' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-white'
-              }`}
-              id="btn-mode-return"
-            >
-              <ArrowDownLeft className="w-4 h-4" />
-              반납하기
-            </button>
-          </div>
-
-          <div className="p-6">
-            {/* Inline feedback toast */}
-            <AnimatePresence>
-              {feedback && (
-                <motion.div
-                  initial={{ opacity: 0, y: -8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  className={`mb-4 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 ${
-                    feedback.type === 'ok'
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
-                      : 'bg-rose-50 text-rose-700 border border-rose-100'
-                  }`}
-                >
-                  {feedback.type === 'ok' ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-                  {feedback.msg}
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {mode === 'borrow' ? (
-              /* ===== 대여 폼 ===== */
-              <div className="space-y-5">
-                {/* Step 1. 직원 정보 */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
-                    <span className="w-4.5 h-4.5 rounded-full bg-indigo-600 text-white text-[10px] font-mono flex items-center justify-center">1</span>
-                    대여자(직원) 정보
-                  </label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
-                    <input
-                      ref={borrowerRef}
-                      type="text"
-                      value={borrowerInput}
-                      onChange={(e) => setBorrowerInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          if (borrower) borrowCodeRef.current?.focus();
-                        }
-                      }}
-                      placeholder="사번 / 이름 / 이메일 입력 (사원증 바코드 스캔 가능)"
-                      className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
-                    />
-                  </div>
-                  {borrower ? (
-                    <div className="rounded-xl border border-emerald-200 overflow-hidden bg-white">
-                      <div className="flex items-center justify-between px-3 py-2 bg-emerald-50 border-b border-emerald-100">
-                        <span className="text-[11px] font-bold text-emerald-800 flex items-center gap-1.5">
-                          <Check className="w-3.5 h-3.5" />
-                          대여자 확인됨
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => { setBorrowerInput(''); borrowerRef.current?.focus(); }}
-                          className="text-emerald-600 hover:text-emerald-900 cursor-pointer"
-                          title="대여자 변경"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-xs border-collapse">
-                          <thead>
-                            <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-500">
-                              <th className="py-2 px-3 whitespace-nowrap">이름</th>
-                              <th className="py-2 px-3 whitespace-nowrap">이메일</th>
-                              <th className="py-2 px-3 whitespace-nowrap">소속</th>
-                              <th className="py-2 px-3 whitespace-nowrap">브랜드</th>
-                              <th className="py-2 px-3 whitespace-nowrap text-center">연체여부</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr>
-                              <td className="py-2.5 px-3 font-bold text-slate-800 whitespace-nowrap">{borrower.name}</td>
-                              <td className="py-2.5 px-3 text-slate-600 font-mono text-[11px] whitespace-nowrap">{borrower.email}</td>
-                              <td className="py-2.5 px-3 text-slate-700 whitespace-nowrap">{borrower.affiliation || borrower.groupName}</td>
-                              <td className="py-2.5 px-3 text-slate-700 whitespace-nowrap">{borrower.brand || '-'}</td>
-                              <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                                {overdueCountOf(borrower.memberId) > 0 ? (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-full">
-                                    <AlertCircle className="w-3 h-3" />
-                                    연체 {overdueCountOf(borrower.memberId)}건
-                                  </span>
-                                ) : (
-                                  <span className="text-slate-400">-</span>
-                                )}
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  ) : borrowerInput.trim() && filteredMembers.length > 0 ? (
-                    <div className="rounded-xl border border-slate-200 overflow-hidden bg-white">
-                      <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-600">
-                        직원 선택 ({filteredMembers.length}명)
-                      </div>
-                      <div className="overflow-x-auto max-h-48 overflow-y-auto">
-                        <table className="w-full text-left text-xs border-collapse">
-                          <thead>
-                            <tr className="bg-slate-50/80 border-b border-slate-100 text-[10px] font-bold text-slate-500 sticky top-0">
-                              <th className="py-2 px-3 w-8"></th>
-                              <th className="py-2 px-3 whitespace-nowrap">이름</th>
-                              <th className="py-2 px-3 whitespace-nowrap">이메일</th>
-                              <th className="py-2 px-3 whitespace-nowrap">소속</th>
-                              <th className="py-2 px-3 whitespace-nowrap">브랜드</th>
-                              <th className="py-2 px-3 whitespace-nowrap text-center">연체여부</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100">
-                            {filteredMembers.map((m) => {
-                              const overdue = overdueCountOf(m.memberId);
-                              return (
-                                <tr
-                                  key={m.memberId}
-                                  onClick={() => selectBorrower(m)}
-                                  className="hover:bg-indigo-50/60 cursor-pointer transition-colors"
-                                >
-                                  <td className="py-2 px-3 text-center">
-                                    <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-slate-300" />
-                                  </td>
-                                  <td className="py-2 px-3 font-bold text-slate-800 whitespace-nowrap">{m.name}</td>
-                                  <td className="py-2 px-3 text-slate-600 font-mono text-[11px] whitespace-nowrap">{m.email}</td>
-                                  <td className="py-2 px-3 text-slate-700 whitespace-nowrap">{m.affiliation || m.groupName}</td>
-                                  <td className="py-2 px-3 text-slate-700 whitespace-nowrap">{m.brand || '-'}</td>
-                                  <td className="py-2 px-3 text-center whitespace-nowrap">
-                                    {overdue > 0 ? (
-                                      <span className="text-[10px] font-bold text-rose-600">연체 {overdue}건</span>
-                                    ) : (
-                                      <span className="text-slate-400">-</span>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  ) : borrowerInput.trim() ? (
-                    <p className="text-[11px] text-rose-500 font-bold pl-1">등록된 직원 정보를 찾을 수 없습니다.</p>
-                  ) : (
-                    <p className="text-[11px] text-slate-400 pl-1">대여자를 먼저 확인한 뒤 상품 바코드를 스캔하세요.</p>
-                  )}
-                </div>
-
-                {/* 대여 기간 */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                    대여 기간
-                  </label>
-                  <select
-                    value={borrowDays}
-                    onChange={(e) => setBorrowDays(e.target.value)}
-                    className="w-full p-2.5 border border-slate-200 bg-white rounded-lg text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                  >
-                    <option value="3">3일 (긴급 품목)</option>
-                    <option value="7">7일 (일반 품목)</option>
-                    <option value="14">14일 (장기 기획)</option>
-                    <option value="30">30일 (출장 원거리)</option>
-                  </select>
-                </div>
-
-                {/* Step 2. 바코드 스캔 → 장바구니 */}
-                <form onSubmit={handleBorrowScan} className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
-                    <span className="w-4.5 h-4.5 rounded-full bg-indigo-600 text-white text-[10px] font-mono flex items-center justify-center">2</span>
-                    상품 바코드 스캔 (장바구니 담기)
-                  </label>
-                  <div className={`relative rounded-xl border-2 border-dashed transition-colors ${borrower ? 'border-indigo-300 bg-indigo-50/40' : 'border-slate-200 bg-slate-50'}`}>
-                    <Barcode className={`absolute left-4 top-1/2 -translate-y-1/2 w-6 h-6 ${borrower ? 'text-indigo-500' : 'text-slate-300'}`} />
-                    <input
-                      ref={borrowCodeRef}
-                      type="text"
-                      value={borrowCode}
-                      onChange={(e) => setBorrowCode(e.target.value)}
-                      disabled={!borrower}
-                      placeholder={borrower ? '상품코드 입력 후 Enter (바코드 리더기 자동 입력)' : '먼저 대여자를 확인하세요'}
-                      className="w-full pl-13 pr-4 py-4 bg-transparent text-base font-mono font-bold tracking-wider focus:outline-none disabled:cursor-not-allowed placeholder:font-sans placeholder:text-sm placeholder:font-medium placeholder:tracking-normal"
-                    />
-                  </div>
-                  <p className="text-[10.5px] text-slate-400 pl-1">
-                    스캔한 샘플은 장바구니에 담깁니다. 동의서 작성·전자서명 완료 후 대여 처리됩니다.
-                  </p>
-                </form>
-
-                {/* Step 3. 장바구니 + 동의서 작성 */}
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
-                    <span className="w-4.5 h-4.5 rounded-full bg-indigo-600 text-white text-[10px] font-mono flex items-center justify-center">3</span>
-                    대여 리스트
-                    {borrowCart.length > 0 && (
-                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
-                        {borrowCart.length} PCS
-                      </span>
-                    )}
-                  </label>
-
-                  {borrowCart.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 py-8 text-center">
-                      <Package className="w-7 h-7 text-slate-300 mx-auto mb-2" />
-                      <p className="text-[11px] text-slate-400 font-medium">스캔한 샘플이 여기에 표시됩니다.</p>
-                    </div>
-                  ) : (
-                    <div className="rounded-xl border border-slate-200 overflow-hidden">
-                      <table className="w-full text-left text-xs">
-                        <thead>
-                          <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-500">
-                            <th className="py-2 px-3">아이템</th>
-                            <th className="py-2 px-3">Sample NO.</th>
-                            <th className="py-2 px-3">브랜드</th>
-                            <th className="py-2 px-3 w-10"></th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {borrowCart.map((item) => (
-                            <tr key={item.sampleCode}>
-                              <td className="py-2 px-3 font-semibold text-slate-800">{item.category}</td>
-                              <td className="py-2 px-3 font-mono text-indigo-600 text-[11px]">{item.sampleCode}</td>
-                              <td className="py-2 px-3 text-blue-600 font-bold">{item.brand}</td>
-                              <td className="py-2 px-3 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => removeFromCart(item.sampleCode)}
-                                  className="p-1 rounded hover:bg-rose-50 text-slate-400 hover:text-rose-500 cursor-pointer"
-                                  title="삭제"
-                                >
-                                  <X className="w-3.5 h-3.5" />
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={handleCreateAgreement}
-                    disabled={!borrower || borrowCart.length === 0 || creatingAgreement}
-                    className="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    {creatingAgreement ? (
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <FileText className="w-4 h-4" />
-                    )}
-                    대여 동의서 작성 ({borrowCart.length || 0}건)
-                  </button>
-                </div>
-              </div>
-            ) : (
-              /* ===== 반납 폼 ===== */
-              <div className="space-y-5">
-                <div className="flex items-center gap-2.5 p-3 bg-slate-50 rounded-xl border border-slate-100">
-                  <ScanLine className="w-5 h-5 text-slate-700 shrink-0" />
-                  <p className="text-xs text-slate-500 font-medium leading-relaxed">
-                    반납할 상품의 <strong className="text-slate-700">바코드를 리더기로 스캔</strong>하면 자동으로 반납 처리됩니다. 직원 정보 입력은 필요 없습니다.
-                  </p>
-                </div>
-
-                <form onSubmit={handleReturnScan} className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
-                    <Barcode className="w-3.5 h-3.5 text-slate-400" />
-                    반납 바코드 스캔
-                  </label>
-                  <div className="relative rounded-xl border-2 border-dashed border-slate-300 bg-slate-50">
-                    <Barcode className="absolute left-4 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-600" />
-                    <input
-                      ref={returnCodeRef}
-                      type="text"
-                      value={returnCode}
-                      onChange={(e) => setReturnCode(e.target.value)}
-                      disabled={processing}
-                      placeholder="상품코드 입력 후 Enter (바코드 리더기 자동 입력)"
-                      className="w-full pl-13 pr-4 py-4 bg-transparent text-base font-mono font-bold tracking-wider focus:outline-none disabled:cursor-not-allowed placeholder:font-sans placeholder:text-sm placeholder:font-medium placeholder:tracking-normal"
-                    />
-                    {processing && <RefreshCw className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-600 animate-spin" />}
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={!returnCode.trim() || processing}
-                    className="w-full mt-2 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    <ArrowDownLeft className="w-4 h-4" />
-                    반납 처리
-                  </button>
-                </form>
-              </div>
-            )}
-          </div>
+          )}
         </div>
 
-        {/* Right: 실시간 스캔 로그 */}
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col overflow-hidden" id="scan-log-panel">
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-2">
-              <Clock className="w-4 h-4 text-slate-400" />
-              실시간 처리 로그
-            </h3>
-            {scanLog.length > 0 && (
+        <div className="pt-2.5 space-y-2.5">
+          <div className="flex flex-col lg:flex-row lg:justify-between items-stretch lg:items-center gap-x-3 gap-y-2.5" id="rental-filter-chips-row">
+            <div className="flex flex-nowrap gap-x-2 items-center overflow-x-auto min-w-0 shrink">
               <button
-                onClick={() => setScanLog([])}
-                className="text-[11px] text-slate-400 hover:text-rose-500 font-semibold flex items-center gap-1 cursor-pointer"
-                title="로그 비우기"
-              >
-                <Trash2 className="w-3 h-3" />
-                비우기
-              </button>
-            )}
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-2 max-h-[460px]">
-            {scanLog.length === 0 ? (
-              <div className="py-20 text-center text-slate-400 flex flex-col items-center gap-2">
-                <ScanLine className="w-8 h-8 text-slate-300" />
-                <span className="text-xs font-medium">스캔 내역이 여기에 표시됩니다.</span>
-              </div>
-            ) : (
-              scanLog.map((log) => {
-                const color =
-                  log.kind === 'borrow'
-                    ? 'bg-indigo-50 border-indigo-100 text-indigo-600'
-                    : log.kind === 'return'
-                    ? 'bg-emerald-50 border-emerald-100 text-emerald-600'
-                    : 'bg-rose-50 border-rose-100 text-rose-600';
-                const Icon = log.kind === 'borrow' ? ArrowUpRight : log.kind === 'return' ? ArrowDownLeft : AlertCircle;
-                const kindLabel = log.kind === 'borrow' ? '대여' : log.kind === 'return' ? '반납' : '실패';
-                return (
-                  <motion.div
-                    key={log.id}
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className="flex items-start gap-2.5 p-2.5 rounded-xl border border-slate-100 bg-white"
-                  >
-                    {log.image ? (
-                      <img
-                        src={log.image}
-                        alt={log.title}
-                        referrerPolicy="no-referrer"
-                        className="w-12 h-14 object-cover rounded-lg border border-slate-100 bg-slate-50 shrink-0"
-                      />
-                    ) : (
-                      <div className="w-12 h-14 rounded-lg border border-slate-100 bg-slate-50 shrink-0 flex items-center justify-center">
-                        <Package className="w-5 h-5 text-slate-300" />
-                      </div>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-bold text-slate-800 truncate">{log.title}</span>
-                        <span className="text-[9.5px] text-slate-400 font-mono shrink-0">{log.time}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                        <span className={`inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${color}`}>
-                          <Icon className="w-2.5 h-2.5" />
-                          {kindLabel}
-                        </span>
-                        {log.code && (
-                          <span className="font-mono text-[9.5px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">{log.code}</span>
-                        )}
-                        {log.brand && (
-                          <span className="text-[9.5px] text-slate-600 font-semibold">{log.brand}</span>
-                        )}
-                        {log.locationNo && (
-                          <span className="text-[9.5px] text-slate-400 font-mono">위치 {log.locationNo}</span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-slate-500 truncate mt-1">{log.sub}</p>
-                      {log.dueDate && (
-                        <div
-                          className={`mt-1.5 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                            log.kind === 'borrow' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
-                          }`}
-                        >
-                          <Calendar className="w-3 h-3" />
-                          {log.kind === 'borrow'
-                            ? `${log.dueDate}까지 반납${log.days ? ` (${log.days}일)` : ''}`
-                            : '반납 완료'}
-                        </div>
-                      )}
-                    </div>
-                  </motion.div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      </div>
-
-      {mode === 'borrow' && (
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden" id="rental-agreement-table">
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <FileText className="w-4 h-4 text-indigo-500" />
-              <h3 className="text-sm font-extrabold text-slate-800">대여 동의서</h3>
-            </div>
-            <span className="text-[10px] font-bold text-slate-400">
-              서명 완료 후 대여 처리 · 미서명 {sortedAgreements.filter((a) => a.signatureStatus === 'pending').length}건
-            </span>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                  <th className="py-3 px-4 whitespace-nowrap">동의서번호</th>
-                  <th className="py-3 px-4 whitespace-nowrap">대여자</th>
-                  <th className="py-3 px-4 whitespace-nowrap">브랜드</th>
-                  <th className="py-3 px-4 whitespace-nowrap">대여일</th>
-                  <th className="py-3 px-4 whitespace-nowrap">수량</th>
-                  <th className="py-3 px-4 whitespace-nowrap text-center">서명</th>
-                  <th className="py-3 px-4 whitespace-nowrap text-center">보기</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {sortedAgreements.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-14 text-center text-slate-400 font-medium">
-                      작성된 대여 동의서가 없습니다. 샘플 스캔 후 동의서를 작성해 주세요.
-                    </td>
-                  </tr>
-                ) : (
-                  sortedAgreements.map((agreement) => (
-                    <tr key={agreement.agreementId} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="py-3 px-4 font-mono font-bold text-slate-700 whitespace-nowrap">{agreement.agreementId}</td>
-                      <td className="py-3 px-4 font-bold text-slate-800 whitespace-nowrap">{agreement.borrowerName}</td>
-                      <td className="py-3 px-4 font-bold text-blue-600 whitespace-nowrap">{agreement.brand}</td>
-                      <td className="py-3 px-4 font-mono text-slate-500 whitespace-nowrap">{agreement.rentDate}</td>
-                      <td className="py-3 px-4 font-mono text-slate-700 whitespace-nowrap">{agreement.quantity} PCS</td>
-                      <td className="py-3 px-4 text-center whitespace-nowrap">
-                        {agreement.signatureStatus === 'signed' ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-full">
-                            <CheckCircle2 className="w-3 h-3" />
-                            서명 완료
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-100 px-2.5 py-1 rounded-full">
-                            <PenLine className="w-3 h-3" />
-                            서명 대기
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 text-center whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => openAgreementModal(agreement)}
-                          className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                          보기
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-      </>
-      )}
-
-      {/* ============ 대여/반납 현황 테이블 ============ */}
-      {view === 'status' && (
-      <div className="space-y-4" id="rentals-status-root">
-        {/* 필터 패널 (상품관리 탭과 동일한 디자인 언어) */}
-        <div className="space-y-4 bg-white p-5 rounded-2xl border border-slate-200/60 shadow-3xs" id="rentals-filter-panel">
-          {/* Row 1: 검색 */}
-          <div className="flex gap-3 justify-between items-center">
-            <div className="relative flex-1">
-              <Search className="absolute left-3.5 top-2.5 w-4 h-4 text-slate-400" />
-              <input
-                type="text"
-                placeholder="검색어를 입력하세요 (상품코드, 상품명, 대여자, 부서)"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-slate-100/70 border-0 hover:bg-slate-100 focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-violet-500 rounded-xl text-xs font-medium placeholder:text-slate-400 transition-all font-sans"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-3 top-2.5 p-0.5 hover:bg-slate-200 rounded-full"
-                >
-                  <X className="w-3.5 h-3.5 text-slate-400" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Row 2: 상태 필터 칩 + 카운터 */}
-          <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 pt-2.5 border-t border-slate-100">
-            <div className="flex flex-wrap gap-2 items-center">
-              <button
-                onClick={() => { setSearchQuery(''); setSelectedStatus('전체'); }}
-                className="bg-[#1e293b] hover:bg-[#0f172a] text-white text-xs font-bold py-1.5 px-3.5 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                type="button"
+                onClick={resetAllFilters}
+                className="bg-[#1e293b] hover:bg-[#0f172a] text-white text-xs font-bold py-1.5 px-3.5 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
               >
                 <CheckCircle2 className="w-3.5 h-3.5 text-white" />
                 <span>필터 초기화</span>
               </button>
-              <button
-                onClick={() => setSelectedStatus(selectedStatus === '대여중' ? '전체' : '대여중')}
-                className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
-                  selectedStatus === '대여중' ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
-                }`}
-              >
-                대여중 {onLoanCount}
-              </button>
-              <button
-                onClick={() => setSelectedStatus(selectedStatus === '연체중' ? '전체' : '연체중')}
-                className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
-                  selectedStatus === '연체중' ? 'bg-rose-600 text-white' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
-                }`}
-              >
-                연체 {overdueCount}
-              </button>
-              <button
-                onClick={() => setSelectedStatus(selectedStatus === '반납완료' ? '전체' : '반납완료')}
-                className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
-                  selectedStatus === '반납완료' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                }`}
-              >
-                반납완료 {returnedCount}
-              </button>
+
+              <div className="relative shrink-0" ref={regDateFilterRef}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (regDateOpen) {
+                      setRegDateOpen(false);
+                      return;
+                    }
+                    if (regDateFilterRef.current) {
+                      const rect = regDateFilterRef.current.getBoundingClientRect();
+                      const popoverWidth = 560;
+                      let left = rect.left;
+                      if (left + popoverWidth > window.innerWidth - 16) {
+                        left = Math.max(16, window.innerWidth - popoverWidth - 16);
+                      }
+                      setRegDatePopoverPos({ top: rect.bottom + 4, left });
+                    }
+                    setRegDateOpen(true);
+                  }}
+                  className={`bg-white hover:bg-slate-50 border pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none transition-colors cursor-pointer whitespace-nowrap ${
+                    regDateOpen ? 'border-violet-500' : 'border-slate-200 focus:border-violet-500'
+                  }`}
+                >
+                  {regDateFilterLabel}
+                </button>
+                <ChevronDown className={`absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none transition-transform ${regDateOpen ? 'rotate-180' : ''}`} />
+              </div>
+
+              {regDateOpen &&
+                createPortal(
+                  <div ref={regDatePopoverRef} className="fixed z-[9999]" style={{ top: regDatePopoverPos.top, left: regDatePopoverPos.left }}>
+                    <DateRangeCalendar
+                      initialFrom={regDateFrom}
+                      initialTo={regDateTo}
+                      onConfirm={(from, to) => {
+                        setRegDateFrom(from);
+                        setRegDateTo(to);
+                        setRegDateOpen(false);
+                      }}
+                      onCancel={() => setRegDateOpen(false)}
+                    />
+                  </div>,
+                  document.body
+                )}
+
+              <div className="relative shrink-0">
+                <select
+                  value={selectedBrand}
+                  onChange={(e) => setSelectedBrand(e.target.value)}
+                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
+                >
+                  {uniqueBrands.map((b) => (
+                    <option key={b} value={b}>
+                      {b === '전체' ? '브랜드: 전체' : b}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
+              </div>
+
+              <div className="relative shrink-0">
+                <select
+                  value={selectedCountry}
+                  onChange={(e) => setSelectedCountry(e.target.value)}
+                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
+                >
+                  <option value="전체">국가: 전체</option>
+                  <option value="한국">한국</option>
+                  <option value="중국">중국</option>
+                </select>
+                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
+              </div>
+
+              <div className="relative shrink-0">
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
+                >
+                  <option value="전체">카테고리: 전체</option>
+                  {categoryFilterOptions.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
+              </div>
+
+              <div className="relative shrink-0">
+                <select
+                  value={selectedRegisterer}
+                  onChange={(e) => setSelectedRegisterer(e.target.value)}
+                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
+                >
+                  {uniqueRegisterers.map((r) => (
+                    <option key={r} value={r}>
+                      {r === '전체' ? '등록자: 전체' : r}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
+              </div>
             </div>
 
-            <div className="flex items-center sm:self-center shrink-0 self-end">
-              <span className="text-[11px] text-slate-400 font-extrabold font-mono uppercase tracking-wide">
-                목록 {filteredRentals.length}
+            <div className="flex flex-wrap items-center gap-2.5 lg:self-center shrink-0 self-end justify-end w-full lg:w-auto">
+              <span className="text-[11px] text-slate-400 font-extrabold font-mono uppercase tracking-wide whitespace-nowrap">
+                목록 {currentListCount.toLocaleString()}건
               </span>
+              <button
+                type="button"
+                onClick={handleExcelDownload}
+                className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white py-1.5 px-3 rounded-lg text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shadow-3xs"
+              >
+                <Download className="w-3.5 h-3.5" />
+                엑셀 다운로드
+              </button>
+              <div className="relative">
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value))}
+                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3 pr-7 py-1.5 text-[11px] font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
+                >
+                  {[10, 20, 50, 100].map((n) => (
+                    <option key={n} value={n}>
+                      {n}개씩
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
+              </div>
             </div>
           </div>
+
+          <div className="flex flex-wrap gap-2 items-center pt-0.5" id="rental-status-chips">
+            <div className="flex items-center gap-1.5 shrink-0" id="rental-approval-status-chips">
+              <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">승인 여부</span>
+              {APPROVAL_STATUS_CHIPS.map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={() => selectPendingSubTab(chip.id)}
+                  className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                    statusTab === 'pending' && pendingSubTab === chip.id ? chip.active : chip.idle
+                  }`}
+                  id={`rental-status-tab-pending-${chip.id}`}
+                >
+                  {chip.label} {pendingSubTabCounts[chip.id]}
+                </button>
+              ))}
+            </div>
+
+            <div className="hidden sm:block w-px h-5 bg-slate-200 mx-1 shrink-0" aria-hidden="true" />
+
+            {RENTAL_STATUS_TAB_CHIPS.map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => selectRentalStatusTab(chip.id)}
+                className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                  statusTab === chip.id ? chip.active : chip.idle
+                }`}
+                id={`rental-status-tab-${chip.id}`}
+              >
+                {chip.label} {tabCounts[chip.id]}
+              </button>
+            ))}
+          </div>
         </div>
+      </div>
 
-        {/* 테이블 카드 */}
-        <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden" id="rentals-status-card">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse font-sans" id="rentals-status-table">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider font-sans text-left">
-                <th className="py-3 px-4 text-left whitespace-nowrap">상품코드</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">상품 이미지</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">상품명</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">브랜드</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">대여자</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">대여일</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">반납예정</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">반납일</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">상태</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">단계</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
-              {filteredRentals.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="py-20 text-center text-slate-400">
-                    일치하는 대여/반납 내역이 없습니다.
-                  </td>
+      <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden" id="rentals-status-root">
+        {/* 승인 대기 */}
+        {statusTab === 'pending' && (
+          <div className="overflow-x-auto" id="rental-pending-table-wrap">
+            <table className="w-full text-left border-collapse" id="rental-pending-table">
+              <thead>
+                <tr className={TABLE_HEAD}>
+                  <th className="py-3 px-3 text-center w-10">
+                    <input
+                      type="checkbox"
+                      checked={allCurrentSelected}
+                      onChange={toggleSelectAll}
+                      className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                      title="전체 선택"
+                    />
+                  </th>
+                  <th className="py-3 pl-2.5 pr-1 w-8 whitespace-nowrap">번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품코드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품 이미지</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품명</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">카테고리</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">브랜드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여자</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">신청일</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여기간</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">서명</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">동의서</th>
+                  {pendingSubTab === 'rejected' ? (
+                    <>
+                      <th className="py-3 px-2.5 whitespace-nowrap">반려일</th>
+                      <th className="py-3 px-2.5 whitespace-nowrap">반려자</th>
+                    </>
+                  ) : (
+                    <th className="py-3 px-2.5 whitespace-nowrap">
+                      {pendingSubTab === 'signature' ? '상태' : '동작'}
+                    </th>
+                  )}
                 </tr>
-              ) : (
-                filteredRentals.map((rental, index) => {
-                  const effectiveStatus = effectiveRentalStatus(rental, today);
-                  const isOverdue = effectiveStatus === '연체중';
-                  const isReturned = effectiveStatus === '반납완료';
-                  const s = samples.find((x) => x.code === rental.sampleCode);
-                  const thumb = s?.imgFrontClean || s?.imgFront || s?.imgFlat;
+              </thead>
+              <tbody className={TABLE_BODY}>
+                {pendingRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={pendingTableColSpan} className="py-20 text-center text-slate-400">
+                      {pendingEmptyMessage}
+                    </td>
+                  </tr>
+                ) : (
+                  pagedPendingRows.map((row, index) => {
+                    const { agreement, item, rowKey } = row;
+                    const group = borrowerGroupLabel(agreement, members);
+                    const sample = sampleOf(item.sampleCode);
+                    const rowNo = (safePage - 1) * pageSize + index + 1;
+                    return (
+                      <tr
+                        key={rowKey}
+                        className={`hover:bg-slate-50/70 transition-colors ${selectedRowKeys.has(rowKey) ? 'bg-violet-50/40' : ''}`}
+                        id={`pending-row-${rowKey}`}
+                      >
+                        <td className="py-3.5 px-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedRowKeys.has(rowKey)}
+                            onChange={() => toggleSelectRow(rowKey)}
+                            className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                          />
+                        </td>
+                        <td className="py-3.5 pl-2.5 pr-1 font-mono text-slate-400 text-[11px]">{rowNo}</td>
+                        <td className="py-3.5 px-2.5 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">{item.sampleCode}</td>
+                        <td className="py-3.5 px-2.5">{renderSampleImage(item.sampleCode, item.sampleName)}</td>
+                        <td className="py-3.5 px-2.5">
+                          <div className="font-semibold text-slate-800 max-w-[190px] truncate" title={item.sampleName}>
+                            {item.sampleName}
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-2.5">
+                          <span className="text-xs text-slate-600 bg-slate-100 py-0.5 px-2 rounded-md font-medium">
+                            {item.category || sample?.category || '-'}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">{item.brand || agreement.brand}</td>
+                        <td className="py-3.5 px-2.5 whitespace-nowrap">
+                          <div className="font-bold text-slate-800">{agreement.borrowerName}</div>
+                          <div className="text-[10px] text-slate-400 font-medium mt-0.5">{group}</div>
+                        </td>
+                        <td className="py-3.5 px-2.5 font-mono text-slate-400 text-[11px] whitespace-nowrap">
+                          {agreement.createdAt || agreement.rentDate}
+                        </td>
+                        <td className="py-3.5 px-2.5 font-bold text-slate-700 whitespace-nowrap">
+                          {rentPeriodLabel(agreement.rentDays)}
+                        </td>
+                        <td className="py-3.5 px-2.5">
+                          {agreement.signatureStatus === 'signed' ? (
+                            <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-100">
+                              서명완료
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-amber-50 text-amber-700 border-amber-100">
+                              서명대기
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-2.5">{renderPendingAgreementCell(agreement)}</td>
+                        {pendingSubTab === 'rejected' ? (
+                          <>
+                            <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">
+                              {agreement.rejectedAt || '-'}
+                            </td>
+                            <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">
+                              {agreement.rejectedBy || '-'}
+                            </td>
+                          </>
+                        ) : (
+                          <td className="py-3.5 px-2.5">{renderPendingActions(agreement)}</td>
+                        )}
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-                  return (
+        {/* 대여 중 */}
+        {statusTab === 'active' && (
+          <div className="overflow-x-auto" id="rental-active-table-wrap">
+            <table className="w-full text-left border-collapse" id="rental-active-table">
+              <thead>
+                <tr className={TABLE_HEAD}>
+                  <th className="py-3 px-3 text-center w-10">
+                    <input
+                      type="checkbox"
+                      checked={allCurrentSelected}
+                      onChange={toggleSelectAll}
+                      className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                      title="전체 선택"
+                    />
+                  </th>
+                  <th className="py-3 pl-2.5 pr-1 w-8 whitespace-nowrap">번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품코드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품 이미지</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품명</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">브랜드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여자</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여일</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">반납예정</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상태</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">동의서</th>
+                </tr>
+              </thead>
+              <tbody className={TABLE_BODY}>
+                {activeRentals.length === 0 ? (
+                  <tr>
+                    <td colSpan={12} className="py-20 text-center text-slate-400">
+                      대여 중인 샘플이 없습니다.
+                    </td>
+                  </tr>
+                ) : (
+                  pagedActiveRentals.map((rental, index) => {
+                    const rowNo = (safePage - 1) * pageSize + index + 1;
+                    return (
                     <tr
                       key={rental.rentalId}
-                      className={`hover:bg-slate-50/50 transition-colors ${isOverdue ? 'bg-rose-50/30' : ''}`}
-                      id={`rental-row-${index}`}
+                      className={`hover:bg-slate-50/70 transition-colors ${selectedRowKeys.has(rental.rentalId) ? 'bg-violet-50/40' : ''}`}
                     >
-                      {/* 상품코드 */}
-                      <td className="py-3.5 px-4 text-left font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">
-                        {rental.sampleCode}
+                      <td className="py-3.5 px-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedRowKeys.has(rental.rentalId)}
+                          onChange={() => toggleSelectRow(rental.rentalId)}
+                          className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                        />
                       </td>
-                      {/* 상품 이미지 */}
-                      <td className="py-3.5 px-4 text-left">
-                        <div className="w-12 h-14 rounded-md bg-slate-50 overflow-hidden inline-flex items-center justify-center border-0 outline-none ring-0">
-                          {thumb ? (
-                            <img
-                              src={thumb}
-                              referrerPolicy="no-referrer"
-                              alt={rental.sampleName}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <Package className="w-4 h-4 text-slate-300" />
-                          )}
-                        </div>
-                      </td>
-                      {/* 상품명 */}
-                      <td className="py-3.5 px-4 text-left">
+                      <td className="py-3.5 pl-2.5 pr-1 font-mono text-slate-400 text-[11px]">{rowNo}</td>
+                      <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">{rental.rentalId}</td>
+                      <td className="py-3.5 px-2.5 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">{rental.sampleCode}</td>
+                      <td className="py-3.5 px-2.5">{renderSampleImage(rental.sampleCode, rental.sampleName)}</td>
+                      <td className="py-3.5 px-2.5">
                         <div className="font-semibold text-slate-800 max-w-[190px] truncate" title={rental.sampleName}>
                           {rental.sampleName}
                         </div>
                       </td>
-                      {/* 브랜드 */}
-                      <td className="py-3.5 px-4 text-left font-semibold text-slate-700 whitespace-nowrap">{rental.sampleBrand}</td>
-                      {/* 대여자: 이름 + 부서·사번 */}
-                      <td className="py-3.5 px-4 text-left whitespace-nowrap">
+                      <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">{rental.sampleBrand}</td>
+                      <td className="py-3.5 px-2.5 whitespace-nowrap">
                         <div className="font-bold text-slate-800">{rental.borrowerName}</div>
-                        <div className="text-[10px] text-slate-400 font-medium mt-0.5">
-                          {rental.borrowerGroup} · {rental.borrowerId}
-                        </div>
+                        <div className="text-[10px] text-slate-400 font-medium mt-0.5">{rental.borrowerGroup}</div>
                       </td>
-                      {/* 대여일 */}
-                      <td className="py-3.5 px-4 text-left font-mono text-slate-500 text-[11px] whitespace-nowrap">{rental.rentDate}</td>
-                      {/* 반납예정 */}
-                      <td className="py-3.5 px-4 text-left font-mono text-[11px] whitespace-nowrap">
-                        <span className={isOverdue ? 'text-rose-600 font-bold' : 'text-slate-500'}>{rental.dueDate}</span>
+                      <td className="py-3.5 px-2.5 font-mono text-slate-400 text-[11px] whitespace-nowrap">{rental.rentDate}</td>
+                      <td className="py-3.5 px-2.5 font-mono text-[11px] whitespace-nowrap">
+                        <span className="text-slate-600">{rental.dueDate}</span>
                         {renderDueSubLabel(rental, today)}
                       </td>
-                      {/* 반납일 */}
-                      <td className="py-3.5 px-4 text-left font-mono text-[11px] whitespace-nowrap">
-                        {rental.returnDate ? (
-                          <span className="text-emerald-600 font-bold">{rental.returnDate}</span>
-                        ) : (
-                          <span className="text-slate-300">-</span>
-                        )}
-                      </td>
-                      {/* 상태 */}
-                      <td className="py-3.5 px-4 text-left">
-                        <span
-                          className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap ${
-                            isOverdue
-                              ? 'bg-rose-100 text-rose-700'
-                              : isReturned
-                              ? 'bg-emerald-50 text-emerald-700'
-                              : 'bg-blue-50 text-blue-700'
-                          }`}
-                        >
-                          {rentalStatusLabel(effectiveStatus)}
+                      <td className="py-3.5 px-2.5">
+                        <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-blue-50 text-blue-700 border-blue-100">
+                          {rentalStatusLabel(effectiveRentalStatus(rental, today))}
                         </span>
                       </td>
-                      {/* 단계 */}
-                      <td className="py-3.5 px-4 text-left">
-                        {isOverdue ? (() => {
-                          const od = overdueDaysOf(rental);
-                          const stage = getOverdueStage(od);
-                          if (!stage) return <span className="text-slate-300 text-[10px]">-</span>;
-                          return (
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => handleSendAutomatedEmail(rental, stage.emailType)}
-                                disabled={sendingId === rental.rentalId}
-                                className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-full border transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap ${stage.badgeClass}`}
-                                title={`${stage.label} 메일 발송`}
-                              >
-                                {sendingId === rental.rentalId ? (
-                                  <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
-                                ) : (
-                                  <Sparkles className="w-3 h-3 shrink-0" />
-                                )}
-                                {stage.label}
-                              </button>
-                              {rental.notifyCount > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedRentalForHistory(rental)}
-                                  className="inline-flex items-center gap-0.5 text-[10px] font-mono font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 py-0.5 px-1.5 rounded-full border border-indigo-200 cursor-pointer shrink-0"
-                                  title="발송 이력"
-                                >
-                                  <History className="w-3 h-3 shrink-0" />
-                                  {rental.notifyCount}
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })() : (
-                          <span className="text-slate-300 text-[10px]">-</span>
-                        )}
-                      </td>
+                      <td className="py-3.5 px-2.5">{renderAgreementCell(rental)}</td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-        </div>
-      </div>
-      )}
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-      {/* ============ 대여자별 보기 모달 (대여중 / 반납 목록) ============ */}
-      {detailView && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto" onClick={() => setDetailView(null)}>
-          <div className="bg-white rounded-xl max-w-5xl w-full border border-slate-100 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
-            <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
-              <div className="space-y-0.5">
-                <h4 className="text-xs font-bold font-mono tracking-wider text-indigo-300 uppercase">
-                  {detailView.mode === 'active' ? 'Active Rentals' : 'Returned List'}
-                </h4>
-                <div className="text-sm font-bold flex items-center gap-1.5">
-                  {detailView.mode === 'active' ? (
-                    <ArrowUpRight className="w-4 h-4 text-indigo-300" />
-                  ) : (
-                    <ArrowDownLeft className="w-4 h-4 text-emerald-300" />
-                  )}
-                  {detailView.borrowerName} 님 {detailView.mode === 'active' ? '대여중' : '반납'} 목록 ({detailRows.length})
-                </div>
-              </div>
-              <button onClick={() => setDetailView(null)} className="text-slate-400 hover:text-white transition-colors">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+        {/* 대여가능 */}
+        {statusTab === 'available' &&
+          renderInventorySampleTable(
+            'available',
+            availableSamples,
+            pagedAvailableSamples,
+            '대여 가능한 샘플이 없습니다.',
+            '대여가능'
+          )}
 
-            <div className="overflow-auto">
-              <table className="w-full text-left border-collapse font-sans">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100 text-[10.5px] font-bold text-slate-500 uppercase tracking-wider sticky top-0">
-                    <th className="py-2.5 px-3 whitespace-nowrap">대여번호</th>
-                    <th className="py-2.5 px-3 whitespace-nowrap">상품명</th>
-                    <th className="py-2.5 px-3 whitespace-nowrap">상품코드</th>
-                    <th className="py-2.5 px-3 whitespace-nowrap">대여일</th>
-                    <th className="py-2.5 px-3 whitespace-nowrap">{detailView.mode === 'active' ? '반납예정일' : '반납일'}</th>
-                    <th className="py-2.5 px-3 whitespace-nowrap text-right">대여비용</th>
-                    <th className="py-2.5 px-3 whitespace-nowrap text-right">연체비용(1차)</th>
-                    <th className="py-2.5 px-3 whitespace-nowrap text-right">연체비용(2차)</th>
-                    <th className="py-2.5 px-3 whitespace-nowrap text-center">연체일</th>
-                    {detailView.mode === 'active' && <th className="py-2.5 px-3 whitespace-nowrap text-center">단계</th>}
+        {/* 부평보관 */}
+        {statusTab === 'bupyeong' &&
+          renderInventorySampleTable(
+            'bupyeong',
+            bupyeongSamples,
+            pagedBupyeongSamples,
+            '부평 보관 중인 샘플이 없습니다.',
+            '부평보관'
+          )}
+
+        {/* 분실/훼손 */}
+        {statusTab === 'lost' && (
+          <div className="overflow-x-auto" id="rental-lost-table-wrap">
+            <table className="w-full text-left border-collapse" id="rental-lost-table">
+              <thead>
+                <tr className={TABLE_HEAD}>
+                  <th className="py-3 px-3 text-center w-10">
+                    <input
+                      type="checkbox"
+                      checked={allCurrentSelected}
+                      onChange={toggleSelectAll}
+                      className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                      title="전체 선택"
+                    />
+                  </th>
+                  <th className="py-3 pl-2.5 pr-1 w-8 whitespace-nowrap">번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품코드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품 이미지</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품명</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">브랜드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여자</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여일</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">처리일</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상태</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">사유서</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">동의서</th>
+                </tr>
+              </thead>
+              <tbody className={TABLE_BODY}>
+                {lostSamples.length === 0 ? (
+                  <tr>
+                    <td colSpan={12} className="py-20 text-center text-slate-400">
+                      분실/훼손 처리된 샘플이 없습니다.
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
-                  {detailRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={detailView.mode === 'active' ? 10 : 9} className="py-16 text-center text-slate-400">
-                        {detailView.mode === 'active' ? '현재 대여중인 상품이 없습니다.' : '반납한 상품이 없습니다.'}
-                      </td>
-                    </tr>
-                  ) : (
-                    detailRows.map((r) => {
-                      const fee = feeOf(r.sampleCode);
-                      const rowOverdue = effectiveRentalStatus(r, today) === '연체중';
-                      return (
-                        <tr key={r.rentalId} className={rowOverdue ? 'bg-rose-50/30' : ''}>
-                          <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px] whitespace-nowrap">{r.rentalId}</td>
-                          <td className="py-2.5 px-3">
-                            <div className="font-semibold text-slate-800 max-w-[200px] truncate" title={r.sampleName}>{r.sampleName}</div>
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-[11px] text-indigo-600 whitespace-nowrap">{r.sampleCode}</td>
-                          <td className="py-2.5 px-3 font-mono text-slate-500 text-[11px] whitespace-nowrap">{r.rentDate}</td>
-                          <td className="py-2.5 px-3 font-mono text-[11px] whitespace-nowrap">
-                            {detailView.mode === 'active' ? (
-                              <>
-                                <span className={rowOverdue ? 'text-rose-600 font-bold' : 'text-slate-500'}>{r.dueDate}</span>
-                                {renderDueSubLabel(r, today)}
-                              </>
-                            ) : (
-                              <>
-                                <span className="text-slate-500">{r.dueDate}</span>
-                                {renderDueSubLabel(r, today)}
-                              </>
-                            )}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-slate-700 text-[11px] text-right whitespace-nowrap">{fee.rental.toLocaleString()}원</td>
-                          <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px] text-right whitespace-nowrap">{fee.o1.toLocaleString()}원</td>
-                          <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px] text-right whitespace-nowrap">{fee.o2.toLocaleString()}원</td>
-                          <td className="py-2.5 px-3 font-mono text-[11px] text-center whitespace-nowrap">
-                            {(() => {
-                              const od = overdueDaysOf(r);
-                              return od > 0 ? <span className="text-rose-600 font-bold">{od}일</span> : <span className="text-slate-300">-</span>;
-                            })()}
-                          </td>
-                          {detailView.mode === 'active' && (
-                            <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                              {rowOverdue ? (() => {
-                                const od = overdueDaysOf(r);
-                                const stage = getOverdueStage(od);
-                                if (!stage) return <span className="text-slate-300 text-[10px]">-</span>;
-                                return (
-                                  <div className="flex items-center justify-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleSendAutomatedEmail(r, stage.emailType)}
-                                      disabled={sendingId === r.rentalId}
-                                      className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-full border transition-colors cursor-pointer disabled:opacity-50 shrink-0 ${stage.badgeClass}`}
-                                      title={`${stage.label} 메일 발송`}
-                                    >
-                                      {sendingId === r.rentalId ? (
-                                        <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
-                                      ) : (
-                                        <Sparkles className="w-3 h-3 shrink-0" />
-                                      )}
-                                      {stage.label}
-                                    </button>
-                                    {r.notifyCount > 0 && (
-                                      <button
-                                        type="button"
-                                        onClick={() => setSelectedRentalForHistory(r)}
-                                        className="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 py-1 px-1.5 rounded-full border border-indigo-200 cursor-pointer shrink-0"
-                                        title="발송 이력"
-                                      >
-                                        <History className="w-3 h-3 shrink-0" />
-                                        {r.notifyCount}
-                                      </button>
-                                    )}
-                                  </div>
-                                );
-                              })() : (
-                                <span className="text-slate-300 text-[10px]">-</span>
-                              )}
-                            </td>
+                ) : (
+                  pagedLostSamples.map((sample, index) => {
+                    const last = lastRentalOfSample(sample.code);
+                    const lossReport = findLossReport(sample.code);
+                    const rowNo = (safePage - 1) * pageSize + index + 1;
+                    return (
+                      <tr
+                        key={sample.code}
+                        className={`hover:bg-slate-50/70 transition-colors ${selectedRowKeys.has(sample.code) ? 'bg-violet-50/40' : ''}`}
+                      >
+                        <td className="py-3.5 px-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedRowKeys.has(sample.code)}
+                            onChange={() => toggleSelectRow(sample.code)}
+                            className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                          />
+                        </td>
+                        <td className="py-3.5 pl-2.5 pr-1 font-mono text-slate-400 text-[11px]">{rowNo}</td>
+                        <td className="py-3.5 px-2.5 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">{sample.code}</td>
+                        <td className="py-3.5 px-2.5">{renderSampleImage(sample.code, sample.name)}</td>
+                        <td className="py-3.5 px-2.5">
+                          <div className="font-semibold text-slate-800 max-w-[190px] truncate" title={sample.name}>
+                            {sample.name}
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">{sample.brand}</td>
+                        <td className="py-3.5 px-2.5 whitespace-nowrap">
+                          {last ? (
+                            <>
+                              <div className="font-bold text-slate-800">{last.borrowerName}</div>
+                              <div className="text-[10px] text-slate-400 font-medium mt-0.5">{last.borrowerGroup}</div>
+                            </>
+                          ) : (
+                            <span className="text-slate-300">-</span>
                           )}
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="bg-slate-50 p-3 border-t border-slate-100 flex justify-end shrink-0">
-              <button onClick={() => setDetailView(null)} className="bg-slate-900 text-white font-bold px-4 py-2 rounded-lg text-xs hover:bg-slate-800 cursor-pointer">
-                닫기
-              </button>
-            </div>
+                        </td>
+                        <td className="py-3.5 px-2.5 font-mono text-slate-400 text-[11px] whitespace-nowrap">{last?.rentDate || '-'}</td>
+                        <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">{last?.returnDate || '-'}</td>
+                        <td className="py-3.5 px-2.5">
+                          <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-slate-100 text-slate-700 border-slate-200">
+                            분실
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-2.5">
+                          {lossReport ? (
+                            <button
+                              type="button"
+                              onClick={() => setViewLossReport(lossReport)}
+                              className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-700 hover:text-slate-900 hover:bg-slate-100 px-2 py-1 rounded-lg cursor-pointer"
+                            >
+                              <FileText className="w-3.5 h-3.5" />
+                              보기
+                            </button>
+                          ) : (
+                            <span className="text-slate-300 text-[11px]">-</span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-2.5">
+                          {last ? renderAgreementCell(last) : <span className="text-slate-300 text-[11px]">-</span>}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
-        </div>
+        )}
+
+        {/* 연체 */}
+        {statusTab === 'overdue' && (
+          <div className="overflow-x-auto" id="rental-overdue-table-wrap">
+            <table className="w-full text-left border-collapse" id="rental-overdue-table">
+              <thead>
+                <tr className={TABLE_HEAD}>
+                  <th className="py-3 px-3 text-center w-10">
+                    <input
+                      type="checkbox"
+                      checked={allCurrentSelected}
+                      onChange={toggleSelectAll}
+                      className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                      title="전체 선택"
+                    />
+                  </th>
+                  <th className="py-3 pl-2.5 pr-1 w-8 whitespace-nowrap">번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품코드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품 이미지</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품명</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">브랜드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여자</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여일</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">반납예정</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상태</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">동의서</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">동작</th>
+                </tr>
+              </thead>
+              <tbody className={TABLE_BODY}>
+                {overdueRentals.length === 0 ? (
+                  <tr>
+                    <td colSpan={13} className="py-20 text-center text-slate-400">
+                      연체 중인 샘플이 없습니다.
+                    </td>
+                  </tr>
+                ) : (
+                  pagedOverdueRentals.map((rental, index) => {
+                    const rowNo = (safePage - 1) * pageSize + index + 1;
+                    return (
+                      <tr
+                        key={rental.rentalId}
+                        className={`hover:bg-rose-50/20 transition-colors ${selectedRowKeys.has(rental.rentalId) ? 'bg-violet-50/40' : ''}`}
+                      >
+                        <td className="py-3.5 px-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedRowKeys.has(rental.rentalId)}
+                            onChange={() => toggleSelectRow(rental.rentalId)}
+                            className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                          />
+                        </td>
+                        <td className="py-3.5 pl-2.5 pr-1 font-mono text-slate-400 text-[11px]">{rowNo}</td>
+                        <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">{rental.rentalId}</td>
+                        <td className="py-3.5 px-2.5 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">{rental.sampleCode}</td>
+                        <td className="py-3.5 px-2.5">{renderSampleImage(rental.sampleCode, rental.sampleName)}</td>
+                        <td className="py-3.5 px-2.5">
+                          <div className="font-semibold text-slate-800 max-w-[190px] truncate" title={rental.sampleName}>
+                            {rental.sampleName}
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">{rental.sampleBrand}</td>
+                        <td className="py-3.5 px-2.5 whitespace-nowrap">
+                          <div className="font-bold text-slate-800">{rental.borrowerName}</div>
+                          <div className="text-[10px] text-slate-400 font-medium mt-0.5">{rental.borrowerGroup}</div>
+                        </td>
+                        <td className="py-3.5 px-2.5 font-mono text-slate-400 text-[11px] whitespace-nowrap">{rental.rentDate}</td>
+                        <td className="py-3.5 px-2.5 font-mono text-[11px] whitespace-nowrap">
+                          <span className="text-rose-600 font-bold">{rental.dueDate}</span>
+                          {renderDueSubLabel(rental, today)}
+                        </td>
+                        <td className="py-3.5 px-2.5">
+                          <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-rose-50 text-rose-700 border-rose-100">
+                            연체
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-2.5">{renderAgreementCell(rental)}</td>
+                        <td className="py-3.5 px-2.5">
+                          <button
+                            type="button"
+                            onClick={() => handleMarkLostDamage(rental)}
+                            disabled={markingLostId === rental.rentalId}
+                            className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-600 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                          >
+                            {markingLostId === rental.rentalId ? (
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-3 h-3" />
+                            )}
+                            분실/훼손 처리
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      </>
       )}
 
-      {/* ============ 발송 이력 모달 ============ */}
-      {selectedRentalForHistory && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="bg-white rounded-xl max-w-md w-full border border-slate-100 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
-              <div className="space-y-0.5">
-                <h4 className="text-xs font-bold font-mono tracking-wider text-indigo-300 uppercase">Alert Log Histories</h4>
-                <div className="text-sm font-bold">
-                  {selectedRentalForHistory.borrowerName} 님 발송 기록 ({selectedRentalForHistory.notifyCount}회)
-                </div>
-              </div>
-              <button onClick={() => setSelectedRentalForHistory(null)} className="text-slate-400 hover:text-white transition-colors">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-5 space-y-4 overflow-y-auto font-sans text-xs">
-              {selectedRentalForHistory.notifyHistory && selectedRentalForHistory.notifyHistory.length > 0 ? (
-                selectedRentalForHistory.notifyHistory.map((item, id) => (
-                  <div key={id} className="p-3 bg-slate-50 border border-slate-150 rounded-xl space-y-2">
-                    <div className="flex justify-between items-center border-b border-slate-200 pb-1.5 text-[10.5px]">
-                      <span className="font-bold text-slate-500 flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5 text-slate-400" />
-                        {item.sentAt}
-                      </span>
-                      <span className="text-violet-600 bg-violet-50 font-bold px-1.5 py-0.5 rounded">Simulated Email Out</span>
-                    </div>
-                    <div className="font-bold text-slate-800">{item.subject}</div>
-                    <p className="text-slate-600 leading-relaxed bg-white border border-slate-100 p-2.5 rounded-lg whitespace-pre-wrap text-[11px]">
-                      {item.content}
-                    </p>
-                  </div>
-                ))
-              ) : (
-                <div className="py-12 text-center text-slate-400">발송된 이메일 이력이 없습니다.</div>
-              )}
-            </div>
-            <div className="bg-slate-50 p-3 border-t border-slate-100 flex justify-end shrink-0">
-              <button
-                onClick={() => setSelectedRentalForHistory(null)}
-                className="bg-slate-900 text-white font-bold px-4 py-2 rounded-lg text-xs hover:bg-slate-800"
-              >
-                확인
-              </button>
-            </div>
-          </div>
-        </div>
+      {viewMode === 'documents' && (
+        <RentalDocumentBox
+          rentalAgreements={rentalAgreements}
+          lossDamageReports={lossDamageReports}
+          samples={samples}
+          categories={categories}
+          onViewAgreement={openAgreementModal}
+          onViewLossReport={(report) => setViewLossReport(report)}
+        />
       )}
 
-      {/* ============ 샘플 대여 동의서 모달 ============ */}
+      {/* 샘플 대여 동의서 모달 */}
       {viewAgreement && (() => {
         const agreement = rentalAgreements.find((a) => a.agreementId === viewAgreement.agreementId) || viewAgreement;
-        const isPending = agreement.signatureStatus === 'pending';
+        const isPendingSign = agreement.signatureStatus === 'pending';
         const isSigning = signingAgreementId === agreement.agreementId;
+        const awaitingApproval = isAwaitingApproval(agreement);
+        const approved = isAgreementApproved(agreement);
 
         return (
           <div
@@ -1509,7 +1654,7 @@ export default function RentalManagerView({
                             <td className="py-2 px-3 text-slate-400 font-mono">{idx + 1}</td>
                             <td className="py-2 px-3 font-semibold text-slate-800">{item.category}</td>
                             <td className="py-2 px-3 font-mono text-indigo-600">{item.sampleCode}</td>
-                            <td className="py-2 px-3 text-slate-500">{item.remark || '-'}</td>
+                            <td className="py-2 px-3 text-slate-500">{item.remark || item.sampleName || '-'}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1526,8 +1671,9 @@ export default function RentalManagerView({
                   </ol>
                 </div>
 
-                {isPending ? (
+                {isPendingSign ? (
                   <div className="space-y-3">
+                    <p className="text-[11px] font-bold text-amber-700">대여자 전자서명 대기 중</p>
                     <label className="flex items-start gap-2.5 cursor-pointer">
                       <input
                         type="checkbox"
@@ -1539,25 +1685,66 @@ export default function RentalManagerView({
                         위 동의 사항을 모두 확인하였으며, 샘플 대여·반납 규정을 준수할 것에 동의합니다. (전자서명)
                       </span>
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => handleSignAgreement(agreement)}
-                      disabled={!agreeChecked || isSigning}
-                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                    >
-                      {isSigning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <PenLine className="w-4 h-4" />}
-                      전자서명 및 대여 처리
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSignAgreement(agreement)}
+                        disabled={!agreeChecked || isSigning}
+                        className="inline-flex items-center gap-1.5 bg-violet-600 hover:bg-violet-700 text-white font-bold text-xs py-2.5 px-4 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        {isSigning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <PenLine className="w-4 h-4" />}
+                        전자서명
+                      </button>
+                    </div>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 text-emerald-800 rounded-xl px-4 py-3 text-sm font-bold">
-                    <CheckCircle2 className="w-5 h-5 shrink-0" />
-                    전자서명 완료 · {agreement.signedBy} · {agreement.signedAt}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 text-emerald-800 rounded-xl px-4 py-3 text-sm font-bold">
+                      <CheckCircle2 className="w-5 h-5 shrink-0" />
+                      전자서명 완료 · {agreement.signedBy} · {agreement.signedAt}
+                    </div>
+                    {awaitingApproval && (
+                      <div className="flex items-center gap-2 bg-amber-50 border border-amber-100 text-amber-800 rounded-xl px-4 py-3 text-[11px] font-bold">
+                        <Clock className="w-4 h-4 shrink-0" />
+                        승인 대기 탭에서 「승인」을 진행해 주세요.
+                      </div>
+                    )}
+                    {approved && (
+                      <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-100 text-indigo-800 rounded-xl px-4 py-3 text-sm font-bold">
+                        <CheckCircle2 className="w-5 h-5 shrink-0" />
+                        대여 승인 완료 · {agreement.approvedBy} · {agreement.approvedAt}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
 
               <div className="px-5 py-4 border-t border-slate-100 bg-slate-50 flex flex-wrap justify-end gap-2 shrink-0">
+                {awaitingApproval && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleApproveAgreement(agreement)}
+                      disabled={approvingAgreementId === agreement.agreementId}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 px-4 py-2 rounded-lg disabled:opacity-50 cursor-pointer"
+                    >
+                      {approvingAgreementId === agreement.agreementId ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Check className="w-3.5 h-3.5" />
+                      )}
+                      승인
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRejectAgreement(agreement)}
+                      disabled={rejectingAgreementId === agreement.agreementId}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 px-4 py-2 rounded-lg disabled:opacity-50 cursor-pointer"
+                    >
+                      반려
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={() => window.print()}
@@ -1586,6 +1773,28 @@ export default function RentalManagerView({
           </div>
         );
       })()}
+
+      {lossReportRental && (
+        <LossDamageReportModal
+          mode="create"
+          rental={lossReportRental}
+          sample={sampleOf(lossReportRental.sampleCode)}
+          onClose={() => setLossReportRental(null)}
+          onSubmit={submitLossDamageReport}
+          submitting={markingLostId === lossReportRental.rentalId}
+        />
+      )}
+
+      {viewLossReport && (
+        <LossDamageReportModal
+          mode="view"
+          report={viewLossReport}
+          sample={sampleOf(viewLossReport.sampleCode)}
+          onClose={() => setViewLossReport(null)}
+          onUpdate={updateLossDamageReport}
+          saving={savingLossReportId === viewLossReport.reportId}
+        />
+      )}
     </div>
   );
 }

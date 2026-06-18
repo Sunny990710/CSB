@@ -60,7 +60,7 @@ const BLOB_KEY = 'database.json';
 // 정적 토큰이 있을 때만 token 을 넘기고, 없으면 SDK 가 OIDC 로 인증하도록 비워 둔다.
 const blobAuth = BLOB_TOKEN ? { token: BLOB_TOKEN } : {};
 
-const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], rentalAgreements: [], categories: [], brands: [], contents: [] };
+const EMPTY_DB = { samples: [], members: [], groups: [], rentals: [], rentalAgreements: [], lossDamageReports: [], categories: [], brands: [], contents: [] };
 
 // 번들/로컬에 포함된 database.json 을 초기 시드 데이터로 읽는다.
 function readSeed(): any {
@@ -470,14 +470,25 @@ function formatDateOnly(d: Date) {
   return d.toISOString().substring(0, 10);
 }
 
+const RENTAL_ID_START = 1634000;
+
+function nextRentalId(db: any): string {
+  let max = RENTAL_ID_START;
+  for (const rental of db.rentals || []) {
+    const n = parseInt(String(rental.rentalId).replace(/\D/g, ''), 10);
+    if (!Number.isNaN(n) && n > max) max = n;
+  }
+  return String(max + 1);
+}
+
 function createRentalRecord(db: any, sample: any, member: any, rentDays: number) {
-  const days = Number(rentDays) || 7;
+  const days = Number(rentDays) || 28;
   const today = new Date();
   const due = new Date();
   due.setDate(today.getDate() + days);
 
   const newRental = {
-    rentalId: 'R-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
+    rentalId: nextRentalId(db),
     sampleCode: sample.code,
     sampleName: sample.name || '미지정 상품',
     sampleBrand: sample.brand,
@@ -512,7 +523,7 @@ app.post('/api/rentals/borrow', async (req, res) => {
   if (!member) return res.status(404).json({ success: false, message: '등록되지 않은 사원 번호입니다. 임직원 관리를 확인해주세요.' });
   if (sample.status !== '대여가능') return res.status(400).json({ success: false, message: '해당 샘플은 현재 대여 가능한 상태가 아닙니다.' });
 
-  const days = Number(rentDays) || 7;
+  const days = Number(rentDays) || 28;
   const newRental = createRentalRecord(db, sample, member, days);
   await saveDB(db);
   res.json({ success: true, rental: newRental, message: '대여 처리가 완료되었습니다.' });
@@ -552,7 +563,7 @@ app.post('/api/rental-agreements', async (req, res) => {
     });
   }
 
-  const days = Number(rentDays) || 7;
+  const days = Number(rentDays) || 28;
   const today = new Date();
   const due = new Date();
   due.setDate(today.getDate() + days);
@@ -577,15 +588,18 @@ app.post('/api/rental-agreements', async (req, res) => {
     signatureStatus: 'pending',
     signedAt: null,
     signedBy: null,
+    approvalStatus: 'pending',
+    approvedAt: null,
+    approvedBy: null,
     createdAt: formatDateOnly(today),
   };
 
   db.rentalAgreements.push(agreement);
   await saveDB(db);
-  res.json({ success: true, agreement, message: '대여 동의서가 작성되었습니다. 전자서명 후 대여 처리됩니다.' });
+  res.json({ success: true, agreement, message: '대여 동의서가 작성되었습니다. 전자서명 후 관리자 대여 승인이 필요합니다.' });
 });
 
-// Rental agreement — sign & batch borrow
+// Rental agreement — electronic signature only
 app.post('/api/rental-agreements/:id/sign', async (req, res) => {
   const db = await getDB();
   if (!db.rentalAgreements) db.rentalAgreements = [];
@@ -594,6 +608,36 @@ app.post('/api/rental-agreements/:id/sign', async (req, res) => {
   if (!agreement) return res.status(404).json({ success: false, message: '동의서를 찾을 수 없습니다.' });
   if (agreement.signatureStatus === 'signed') {
     return res.status(400).json({ success: false, message: '이미 서명 완료된 동의서입니다.' });
+  }
+
+  const member = db.members.find((m: any) => m.memberId === agreement.borrowerId);
+  if (!member) return res.status(404).json({ success: false, message: '대여자 정보를 찾을 수 없습니다.' });
+
+  agreement.signatureStatus = 'signed';
+  agreement.signedAt = formatDateOnly(new Date());
+  agreement.signedBy = member.name;
+  if (!agreement.approvalStatus) agreement.approvalStatus = 'pending';
+
+  await saveDB(db);
+  res.json({
+    success: true,
+    agreement,
+    message: '전자서명이 완료되었습니다. 관리자 대여 승인을 기다려 주세요.',
+  });
+});
+
+// Rental agreement — admin approval & batch borrow
+app.post('/api/rental-agreements/:id/approve', async (req, res) => {
+  const db = await getDB();
+  if (!db.rentalAgreements) db.rentalAgreements = [];
+
+  const agreement = db.rentalAgreements.find((a: any) => a.agreementId === req.params.id);
+  if (!agreement) return res.status(404).json({ success: false, message: '동의서를 찾을 수 없습니다.' });
+  if (agreement.signatureStatus !== 'signed') {
+    return res.status(400).json({ success: false, message: '전자서명이 완료된 동의서만 승인할 수 있습니다.' });
+  }
+  if (agreement.approvalStatus === 'approved') {
+    return res.status(400).json({ success: false, message: '이미 대여 승인된 동의서입니다.' });
   }
 
   const member = db.members.find((m: any) => m.memberId === agreement.borrowerId);
@@ -616,17 +660,113 @@ app.post('/api/rental-agreements/:id/sign', async (req, res) => {
     newRentals.push(rental);
   }
 
-  agreement.signatureStatus = 'signed';
-  agreement.signedAt = formatDateOnly(new Date());
-  agreement.signedBy = member.name;
+  agreement.approvalStatus = 'approved';
+  agreement.approvedAt = formatDateOnly(new Date());
+  agreement.approvedBy = req.body?.approvedBy || '관리자';
 
   await saveDB(db);
   res.json({
     success: true,
     agreement,
     rentals: newRentals,
-    message: `${newRentals.length}건 대여 처리가 완료되었습니다.`,
+    message: `${newRentals.length}건 대여 승인 · 대여 처리가 완료되었습니다.`,
   });
+});
+
+// Rental agreement — admin reject
+app.post('/api/rental-agreements/:id/reject', async (req, res) => {
+  const db = await getDB();
+  if (!db.rentalAgreements) db.rentalAgreements = [];
+
+  const agreement = db.rentalAgreements.find((a: any) => a.agreementId === req.params.id);
+  if (!agreement) return res.status(404).json({ success: false, message: '동의서를 찾을 수 없습니다.' });
+  if (agreement.approvalStatus === 'approved') {
+    return res.status(400).json({ success: false, message: '이미 승인된 동의서는 반려할 수 없습니다.' });
+  }
+
+  agreement.approvalStatus = 'rejected';
+  agreement.rejectedAt = formatDateOnly(new Date());
+  agreement.rejectedBy = req.body?.rejectedBy || '관리자';
+
+  await saveDB(db);
+  res.json({ success: true, agreement, message: '대여 신청이 반려되었습니다.' });
+});
+
+// Mark rental as lost/damaged (sample → 분실) + 사유서 저장
+app.post('/api/rentals/:id/mark-lost', async (req, res) => {
+  const db = await getDB();
+  const rental = db.rentals.find((r: any) => r.rentalId === req.params.id);
+  if (!rental) return res.status(404).json({ success: false, message: '해당 대여 이력을 찾을 수 없습니다.' });
+  if (rental.status === '반납완료') {
+    return res.status(400).json({ success: false, message: '이미 반납 완료된 건입니다.' });
+  }
+
+  const { reason, reportType, compensationAgreed, primaryEvaluator, fashionArchiveReviewer, fashionInstituteReviewer } = req.body || {};
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ success: false, message: '훼손/분실 사유를 입력해 주세요.' });
+  }
+  if (!compensationAgreed) {
+    return res.status(400).json({ success: false, message: '변상 동의에 체크해 주세요.' });
+  }
+
+  const sample = db.samples.find((s: any) => s.code === rental.sampleCode);
+  const member = db.members?.find((m: any) => m.memberId === rental.borrowerId);
+  const today = formatDateOnly(new Date());
+
+  if (sample) sample.status = '분실';
+
+  rental.returnDate = today;
+  rental.status = '반납완료';
+
+  if (!db.lossDamageReports) db.lossDamageReports = [];
+  const report = {
+    reportId: String(1000000 + db.lossDamageReports.length + 1),
+    rentalId: rental.rentalId,
+    sampleCode: rental.sampleCode,
+    reportType: reportType === '훼손' ? '훼손' : '분실',
+    companyName: '이랜드월드',
+    brand: rental.sampleBrand || sample?.brand || '',
+    department: rental.borrowerGroup || member?.groupName || '',
+    employeeId: rental.borrowerId,
+    employeeName: rental.borrowerName,
+    sampleName: rental.sampleName,
+    rentalDate: rental.rentDate,
+    processedDate: today,
+    reason: String(reason).trim(),
+    compensationAgreed: true,
+    signedAt: today,
+    signedBy: rental.borrowerName,
+    primaryEvaluator: primaryEvaluator || '',
+    fashionArchiveReviewer: fashionArchiveReviewer || '',
+    fashionInstituteReviewer: fashionInstituteReviewer || '',
+    createdAt: today,
+  };
+  db.lossDamageReports.push(report);
+
+  await saveDB(db);
+  res.json({ success: true, rental, report, message: '분실/훼손 처리 및 사유서가 등록되었습니다.' });
+});
+
+// Update loss/damage report (사유·결재 정보 수정)
+app.put('/api/loss-damage-reports/:id', async (req, res) => {
+  const db = await getDB();
+  if (!db.lossDamageReports) db.lossDamageReports = [];
+  const report = db.lossDamageReports.find((r: any) => r.reportId === req.params.id);
+  if (!report) return res.status(404).json({ success: false, message: '해당 사유서를 찾을 수 없습니다.' });
+
+  const { reason, reportType, primaryEvaluator, fashionArchiveReviewer, fashionInstituteReviewer } = req.body || {};
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ success: false, message: '훼손/분실 사유를 입력해 주세요.' });
+  }
+
+  report.reason = String(reason).trim();
+  if (reportType === '훼손' || reportType === '분실') report.reportType = reportType;
+  if (primaryEvaluator != null) report.primaryEvaluator = String(primaryEvaluator);
+  if (fashionArchiveReviewer != null) report.fashionArchiveReviewer = String(fashionArchiveReviewer);
+  if (fashionInstituteReviewer != null) report.fashionInstituteReviewer = String(fashionInstituteReviewer);
+
+  await saveDB(db);
+  res.json({ success: true, report, message: '사유서가 저장되었습니다.' });
 });
 
 // Return.
