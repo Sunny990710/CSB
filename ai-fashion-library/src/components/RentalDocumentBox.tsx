@@ -2,15 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import JSZip from 'jszip';
 import { FileText, Search, X, CheckCircle2, Download, ChevronDown } from 'lucide-react';
-import { Sample, Category, RentalAgreement, LossDamageReport } from '../types';
+import { Sample, Category, RentalAgreement, RentalAgreementItem, LossDamageReport } from '../types';
 import { DateRangeCalendar } from './DateRangeCalendar';
 
 type DocTab = 'agreements' | 'loss-reports' | 'compensation';
 
-const DOC_TABS: { id: DocTab; label: string }[] = [
-  { id: 'agreements', label: '대여 동의서' },
-  { id: 'loss-reports', label: '훼손·분실 사유서' },
-  { id: 'compensation', label: '변상금 기준' },
+const DOC_TAB_CHIPS: { id: DocTab; label: string; active: string; idle: string }[] = [
+  { id: 'agreements', label: '대여 동의서', active: 'bg-violet-600 text-white', idle: 'bg-violet-50 text-violet-700 hover:bg-violet-100' },
+  { id: 'loss-reports', label: '훼손·분실 사유서', active: 'bg-rose-600 text-white', idle: 'bg-rose-50 text-rose-700 hover:bg-rose-100' },
+  { id: 'compensation', label: '변상금 기준', active: 'bg-amber-600 text-white', idle: 'bg-amber-50 text-amber-700 hover:bg-amber-100' },
 ];
 
 const COMPENSATION_ROWS: { item: string; ep: number; original: number; ownKr: number; ownCn: number }[] = [
@@ -43,7 +43,17 @@ const rentPeriodLabel = (days: number) => {
 
 const sanitizeFileName = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_');
 
-const buildAgreementText = (agreement: RentalAgreement) => {
+const resolveAgreementItemProductName = (item: RentalAgreementItem, samples: Sample[]) => {
+  const sample = samples.find((s) => s.code === item.sampleCode);
+  return sample?.name || item.sampleName || '-';
+};
+
+const resolveLossReportProductName = (report: LossDamageReport, samples: Sample[]) => {
+  const sample = samples.find((s) => s.code === report.sampleCode);
+  return sample?.name || report.sampleName || '-';
+};
+
+const buildAgreementText = (agreement: RentalAgreement, samples: Sample[]) => {
   const lines = [
     '샘플 대여 동의서',
     '='.repeat(40),
@@ -59,10 +69,10 @@ const buildAgreementText = (agreement: RentalAgreement) => {
     `총 수량: ${agreement.quantity} PCS`,
     '',
     '[샘플 대여 리스트]',
-    'No\t아이템\tSample NO.\t비고',
+    'No\t아이템\tSample NO.\t상품명\t비고',
     ...agreement.items.map(
       (item, idx) =>
-        `${idx + 1}\t${item.category}\t${item.sampleCode}\t${item.remark || item.sampleName || '-'}`,
+        `${idx + 1}\t${item.category}\t${item.sampleCode}\t${resolveAgreementItemProductName(item, samples)}\t${item.remark || '-'}`,
     ),
     '',
     '[동의 사항]',
@@ -75,8 +85,9 @@ const buildAgreementText = (agreement: RentalAgreement) => {
   return lines.join('\n');
 };
 
-const buildLossReportText = (report: LossDamageReport) => {
+const buildLossReportText = (report: LossDamageReport, samples: Sample[]) => {
   const formatSlashDate = (dateStr?: string) => (dateStr || '').replace(/-/g, '/');
+  const productName = resolveLossReportProductName(report, samples);
   const lines = [
     '패션아카이브 샘플 훼손 / 분실 사유서',
     '='.repeat(40),
@@ -90,7 +101,7 @@ const buildLossReportText = (report: LossDamageReport) => {
     `부서: ${report.department}`,
     `사번: ${report.employeeId}`,
     `이름: ${report.employeeName}`,
-    `샘플명: ${report.sampleName}`,
+    `샘플명: ${productName}`,
     `샘플코드: ${report.sampleCode}`,
     `대여일자: ${formatSlashDate(report.rentalDate)}`,
     `처리일: ${formatSlashDate(report.processedDate)}`,
@@ -142,6 +153,7 @@ export default function RentalDocumentBox({
   const [regDatePopoverPos, setRegDatePopoverPos] = useState({ top: 0, left: 0 });
   const [pageSize, setPageSize] = useState(20);
   const [currentPage, setCurrentPage] = useState(1);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set());
 
   const today = new Date().toISOString().substring(0, 10);
 
@@ -266,7 +278,17 @@ export default function RentalDocumentBox({
     () =>
       lossDamageReports
         .filter((r) =>
-          matchSearch(searchQuery, r.reportId, r.sampleCode, r.employeeName, r.brand, r.department, r.rentalId)
+          matchSearch(
+            searchQuery,
+            r.reportId,
+            r.sampleCode,
+            r.sampleName,
+            resolveLossReportProductName(r, samples),
+            r.employeeName,
+            r.brand,
+            r.department,
+            r.rentalId
+          )
         )
         .filter((r) =>
           matchesDetailFilters(r.sampleCode, {
@@ -301,8 +323,39 @@ export default function RentalDocumentBox({
   const pagedAgreements = baseAgreements.slice((safePage - 1) * pageSize, safePage * pageSize);
   const pagedLossReports = baseLossReports.slice((safePage - 1) * pageSize, safePage * pageSize);
 
+  const currentRowKeys =
+    docTab === 'agreements'
+      ? baseAgreements.map((a) => a.agreementId)
+      : docTab === 'loss-reports'
+        ? baseLossReports.map((r) => r.reportId)
+        : [];
+
+  const allCurrentSelected = currentRowKeys.length > 0 && currentRowKeys.every((k) => selectedRowKeys.has(k));
+
+  const toggleSelectAll = () => {
+    setSelectedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (allCurrentSelected) {
+        currentRowKeys.forEach((k) => next.delete(k));
+      } else {
+        currentRowKeys.forEach((k) => next.add(k));
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectRow = (key: string) => {
+    setSelectedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   useEffect(() => {
     setCurrentPage(1);
+    setSelectedRowKeys(new Set());
   }, [searchQuery, selectedBrand, selectedCountry, selectedCategory, selectedRegisterer, regDateFrom, regDateTo, docTab, pageSize]);
 
   useEffect(() => {
@@ -326,6 +379,7 @@ export default function RentalDocumentBox({
     setRegDateTo('');
     setRegDateOpen(false);
     setCurrentPage(1);
+    setSelectedRowKeys(new Set());
   };
 
   const handleBulkDownload = async () => {
@@ -344,12 +398,12 @@ export default function RentalDocumentBox({
     if (docTab === 'agreements') {
       baseAgreements.forEach((agreement) => {
         const fileName = sanitizeFileName(`동의서_${agreement.agreementId}_${agreement.borrowerName}.txt`);
-        folder?.file(fileName, buildAgreementText(agreement));
+        folder?.file(fileName, buildAgreementText(agreement, samples));
       });
     } else {
       baseLossReports.forEach((report) => {
         const fileName = sanitizeFileName(`사유서_${report.reportId}_${report.sampleCode}.txt`);
-        folder?.file(fileName, buildLossReportText(report));
+        folder?.file(fileName, buildLossReportText(report, samples));
       });
     }
 
@@ -364,7 +418,7 @@ export default function RentalDocumentBox({
 
   return (
     <div className="space-y-4" id="rental-document-box">
-      <div className="space-y-3 bg-white p-4 rounded-2xl border border-slate-200/60 shadow-3xs" id="rental-doc-filter-panel">
+      <div className="space-y-4 bg-white p-5 rounded-2xl border border-slate-200/60 shadow-3xs" id="rental-doc-filter-panel">
         <div className="relative">
           <Search className="absolute left-3.5 top-2.5 w-4 h-4 text-slate-400" />
           <input
@@ -385,7 +439,7 @@ export default function RentalDocumentBox({
           )}
         </div>
 
-        <div className="pt-1 space-y-2.5">
+        <div className="pt-2.5 space-y-2.5">
           <div className="flex flex-col lg:flex-row lg:justify-between items-stretch lg:items-center gap-x-3 gap-y-2.5" id="rental-doc-filter-chips-row">
             <div className="flex flex-nowrap gap-x-2 items-center overflow-x-auto min-w-0 shrink">
               <button
@@ -535,9 +589,14 @@ export default function RentalDocumentBox({
             </div>
           </div>
 
-          <div className="inline-flex gap-1 p-1 bg-slate-100 rounded-xl w-fit" id="rental-doc-subtabs">
-            {DOC_TABS.map((tab) => {
-              const count = tab.id === 'agreements' ? docCounts.agreements : tab.id === 'loss-reports' ? docCounts['loss-reports'] : null;
+          <div className="flex flex-wrap gap-2 items-center pt-2.5 border-t border-slate-100 min-h-[38px]" id="rental-doc-subtabs-row">
+            {DOC_TAB_CHIPS.map((tab) => {
+              const count =
+                tab.id === 'agreements'
+                  ? docCounts.agreements
+                  : tab.id === 'loss-reports'
+                    ? docCounts['loss-reports']
+                    : null;
               const isActive = docTab === tab.id;
               return (
                 <button
@@ -547,21 +606,13 @@ export default function RentalDocumentBox({
                     setDocTab(tab.id);
                     setCurrentPage(1);
                   }}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer whitespace-nowrap ${
-                    isActive ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                    isActive ? tab.active : tab.idle
                   }`}
                   id={`rental-doc-tab-${tab.id}`}
                 >
                   {tab.label}
-                  {count != null && (
-                    <span
-                      className={`min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-extrabold flex items-center justify-center ${
-                        isActive ? 'bg-violet-100 text-violet-700' : 'bg-slate-200/80 text-slate-600'
-                      }`}
-                    >
-                      {count}
-                    </span>
-                  )}
+                  {count != null ? ` ${count}` : ''}
                 </button>
               );
             })}
@@ -575,33 +626,80 @@ export default function RentalDocumentBox({
             <table className="w-full text-left border-collapse" id="rental-doc-agreements-table">
               <thead>
                 <tr className={TABLE_HEAD}>
-                  <th className="py-3 px-3 whitespace-nowrap">동의서번호</th>
-                  <th className="py-3 px-3 whitespace-nowrap">대여자</th>
-                  <th className="py-3 px-3 whitespace-nowrap">브랜드</th>
-                  <th className="py-3 px-3 whitespace-nowrap">대여일</th>
-                  <th className="py-3 px-3 whitespace-nowrap">수량</th>
-                  <th className="py-3 px-3 whitespace-nowrap">서명</th>
-                  <th className="py-3 px-3 whitespace-nowrap">동작</th>
+                  <th className="py-3 px-3 text-center w-10">
+                    <input
+                      type="checkbox"
+                      checked={allCurrentSelected}
+                      onChange={toggleSelectAll}
+                      className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                      title="전체 선택"
+                    />
+                  </th>
+                  <th className="py-3 pl-2.5 pr-1 w-8 whitespace-nowrap">번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">동의서번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여자</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">브랜드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">샘플코드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품명</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여일</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">수량</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">서명</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">동의서</th>
                 </tr>
               </thead>
               <tbody className={TABLE_BODY}>
                 {baseAgreements.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-20 text-center text-slate-400">
+                    <td colSpan={11} className="py-20 text-center text-slate-400">
                       등록된 대여 동의서가 없습니다.
                     </td>
                   </tr>
                 ) : (
-                  pagedAgreements.map((agreement) => (
-                    <tr key={agreement.agreementId} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="py-3.5 px-3 font-mono font-bold text-slate-700 text-[11px] whitespace-nowrap">
+                  pagedAgreements.map((agreement, index) => {
+                    const rowNo = (safePage - 1) * pageSize + index + 1;
+                    const firstItem = agreement.items[0];
+                    const sampleCodeDisplay =
+                      agreement.items.length === 0
+                        ? '-'
+                        : agreement.items.length === 1
+                          ? firstItem.sampleCode
+                          : `${firstItem.sampleCode} 외 ${agreement.items.length - 1}건`;
+                    const productNameDisplay =
+                      agreement.items.length === 0
+                        ? '-'
+                        : agreement.items
+                            .map((item) => resolveAgreementItemProductName(item, samples))
+                            .join(', ');
+                    return (
+                    <tr
+                      key={agreement.agreementId}
+                      className={`hover:bg-slate-50/70 transition-colors ${selectedRowKeys.has(agreement.agreementId) ? 'bg-violet-50/40' : ''}`}
+                    >
+                      <td className="py-3.5 px-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedRowKeys.has(agreement.agreementId)}
+                          onChange={() => toggleSelectRow(agreement.agreementId)}
+                          className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                        />
+                      </td>
+                      <td className="py-3.5 pl-2.5 pr-1 font-mono text-slate-400 text-[11px]">{rowNo}</td>
+                      <td className="py-3.5 px-2.5 font-mono font-bold text-slate-700 text-[11px] whitespace-nowrap">
                         {agreement.agreementId}
                       </td>
-                      <td className="py-3.5 px-3 font-bold text-slate-800 whitespace-nowrap">{agreement.borrowerName}</td>
-                      <td className="py-3.5 px-3 font-bold text-indigo-650 whitespace-nowrap">{agreement.brand}</td>
-                      <td className="py-3.5 px-3 font-mono text-slate-500 text-[11px] whitespace-nowrap">{agreement.rentDate}</td>
-                      <td className="py-3.5 px-3 font-mono text-slate-600 whitespace-nowrap">{agreement.quantity} PCS</td>
-                      <td className="py-3.5 px-3">
+                      <td className="py-3.5 px-2.5 font-bold text-slate-800 whitespace-nowrap">{agreement.borrowerName}</td>
+                      <td className="py-3.5 px-2.5 font-bold text-indigo-650 whitespace-nowrap">{agreement.brand}</td>
+                      <td className="py-3.5 px-2.5 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap" title={sampleCodeDisplay}>
+                        {sampleCodeDisplay}
+                      </td>
+                      <td className="py-3.5 px-2.5">
+                        <div className="font-semibold text-slate-800 max-w-[200px] truncate" title={productNameDisplay}>
+                          {productNameDisplay}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">{agreement.rentDate}</td>
+                      <td className="py-3.5 px-2.5 font-mono text-slate-600 whitespace-nowrap">{agreement.quantity} PCS</td>
+                      <td className="py-3.5 px-2.5">
                         {agreement.signatureStatus === 'signed' ? (
                           <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-100">
                             서명완료
@@ -612,7 +710,7 @@ export default function RentalDocumentBox({
                           </span>
                         )}
                       </td>
-                      <td className="py-3.5 px-3">
+                      <td className="py-3.5 px-2.5">
                         <button
                           type="button"
                           onClick={() => onViewAgreement(agreement)}
@@ -623,7 +721,8 @@ export default function RentalDocumentBox({
                         </button>
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -635,42 +734,73 @@ export default function RentalDocumentBox({
             <table className="w-full text-left border-collapse" id="rental-doc-loss-table">
               <thead>
                 <tr className={TABLE_HEAD}>
-                  <th className="py-3 px-3 whitespace-nowrap">사유서번호</th>
-                  <th className="py-3 px-3 whitespace-nowrap">대여자</th>
-                  <th className="py-3 px-3 whitespace-nowrap">부서</th>
-                  <th className="py-3 px-3 whitespace-nowrap">샘플코드</th>
-                  <th className="py-3 px-3 whitespace-nowrap">구분</th>
-                  <th className="py-3 px-3 whitespace-nowrap">처리일</th>
-                  <th className="py-3 px-3 whitespace-nowrap">동작</th>
+                  <th className="py-3 px-3 text-center w-10">
+                    <input
+                      type="checkbox"
+                      checked={allCurrentSelected}
+                      onChange={toggleSelectAll}
+                      className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                      title="전체 선택"
+                    />
+                  </th>
+                  <th className="py-3 pl-2.5 pr-1 w-8 whitespace-nowrap">번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">사유서번호</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">대여자</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">부서</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">샘플코드</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상품명</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">구분</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">처리일</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">사유서</th>
                 </tr>
               </thead>
               <tbody className={TABLE_BODY}>
                 {baseLossReports.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-20 text-center text-slate-400">
+                    <td colSpan={10} className="py-20 text-center text-slate-400">
                       등록된 훼손·분실 사유서가 없습니다.
                     </td>
                   </tr>
                 ) : (
-                  pagedLossReports.map((report) => (
-                    <tr key={report.reportId} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="py-3.5 px-3 font-mono font-bold text-slate-700 text-[11px] whitespace-nowrap">
+                  pagedLossReports.map((report, index) => {
+                    const rowNo = (safePage - 1) * pageSize + index + 1;
+                    const productName = resolveLossReportProductName(report, samples);
+                    return (
+                    <tr
+                      key={report.reportId}
+                      className={`hover:bg-slate-50/70 transition-colors ${selectedRowKeys.has(report.reportId) ? 'bg-violet-50/40' : ''}`}
+                    >
+                      <td className="py-3.5 px-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedRowKeys.has(report.reportId)}
+                          onChange={() => toggleSelectRow(report.reportId)}
+                          className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
+                        />
+                      </td>
+                      <td className="py-3.5 pl-2.5 pr-1 font-mono text-slate-400 text-[11px]">{rowNo}</td>
+                      <td className="py-3.5 px-2.5 font-mono font-bold text-slate-700 text-[11px] whitespace-nowrap">
                         {report.reportId}
                       </td>
-                      <td className="py-3.5 px-3 font-bold text-slate-800 whitespace-nowrap">{report.employeeName}</td>
-                      <td className="py-3.5 px-3 text-slate-700 whitespace-nowrap">{report.department}</td>
-                      <td className="py-3.5 px-3 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">
+                      <td className="py-3.5 px-2.5 font-bold text-slate-800 whitespace-nowrap">{report.employeeName}</td>
+                      <td className="py-3.5 px-2.5 text-slate-700 whitespace-nowrap">{report.department}</td>
+                      <td className="py-3.5 px-2.5 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">
                         {report.sampleCode}
                       </td>
-                      <td className="py-3.5 px-3">
+                      <td className="py-3.5 px-2.5">
+                        <div className="font-semibold text-slate-800 max-w-[200px] truncate" title={productName}>
+                          {productName}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-2.5">
                         <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-slate-100 text-slate-700 border-slate-200">
                           {report.reportType}
                         </span>
                       </td>
-                      <td className="py-3.5 px-3 font-mono text-slate-500 text-[11px] whitespace-nowrap">
+                      <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">
                         {report.processedDate}
                       </td>
-                      <td className="py-3.5 px-3">
+                      <td className="py-3.5 px-2.5">
                         <button
                           type="button"
                           onClick={() => onViewLossReport(report)}
@@ -681,7 +811,8 @@ export default function RentalDocumentBox({
                         </button>
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>

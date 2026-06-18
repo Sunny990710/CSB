@@ -7,7 +7,7 @@ import {
   TrendingUp, TrendingDown, Minus, Flame,
   ChevronRight, ChevronDown, X,
 } from 'lucide-react';
-import { Sample, Rental, Member, rentalStatusLabel, effectiveRentalStatus } from '../types';
+import { Sample, Rental, Member, rentalStatusLabel, effectiveRentalStatus, sampleStatusLabel, SampleStatus } from '../types';
 
 interface DashboardViewProps {
   samples: Sample[];
@@ -143,6 +143,122 @@ function weekBounds(ref: Date) {
   return { thisStart: start, thisEnd: end, prevStart, prevEnd: start };
 }
 
+type PopularSamplePeriod = 'week' | '1month' | '3months';
+
+const POPULAR_SAMPLE_PERIOD_OPTIONS: { id: PopularSamplePeriod; label: string }[] = [
+  { id: 'week', label: '이번 주' },
+  { id: '1month', label: '1개월' },
+  { id: '3months', label: '3개월' },
+];
+
+function popularPeriodBounds(period: PopularSamplePeriod, ref: Date) {
+  const end = new Date(ref);
+  end.setHours(0, 0, 0, 0);
+  end.setDate(end.getDate() + 1);
+
+  if (period === 'week') {
+    const { thisStart } = weekBounds(ref);
+    return { start: thisStart, end };
+  }
+
+  const start = new Date(ref);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - (period === '1month' ? 30 : 90));
+  return { start, end };
+}
+
+function sampleStatusBadgeClass(status: SampleStatus) {
+  switch (status) {
+    case '대여가능':
+      return 'bg-emerald-50 text-emerald-700 border-emerald-100';
+    case '대여중':
+      return 'bg-blue-50 text-blue-700 border-blue-100';
+    case '연체중':
+      return 'bg-rose-50 text-rose-700 border-rose-100';
+    case '부평보관':
+      return 'bg-amber-50 text-amber-700 border-amber-100';
+    default:
+      return 'bg-slate-100 text-slate-600 border-slate-200';
+  }
+}
+
+function formatDueCountdownLabel(dueDate: string, ref: Date) {
+  const days = Math.ceil((parseDay(dueDate).getTime() - ref.getTime()) / MS_DAY);
+  if (days > 0) return `(D-${days})`;
+  if (days < 0) return `(D+${Math.abs(days)})`;
+  return '(D-day)';
+}
+
+function buildRentalTrendSeries(periodRentals: Rental[], period: PopularSamplePeriod, start: Date, end: Date) {
+  const bucketCount = period === 'week' ? 7 : period === '1month' ? 4 : 12;
+  const spanMs = Math.max(end.getTime() - start.getTime(), MS_DAY);
+  const bucketMs = spanMs / bucketCount;
+  const counts = Array.from({ length: bucketCount }, () => 0);
+
+  periodRentals.forEach((r) => {
+    const t = parseDay(r.rentDate).getTime();
+    const idx = Math.min(bucketCount - 1, Math.max(0, Math.floor((t - start.getTime()) / bucketMs)));
+    counts[idx] += 1;
+  });
+
+  let cumulative = 0;
+  return counts.map((c) => {
+    cumulative += c;
+    return cumulative;
+  });
+}
+
+function getPopularSampleInsights(
+  code: string,
+  allRentals: Rental[],
+  period: PopularSamplePeriod,
+  ref: Date,
+) {
+  const { start, end } = popularPeriodBounds(period, ref);
+  const periodRentals = allRentals
+    .filter((r) => r.sampleCode === code && inRange(r.rentDate, start, end))
+    .sort((a, b) => a.rentDate.localeCompare(b.rentDate));
+
+  const deptMap = new Map<string, number>();
+  periodRentals.forEach((r) => {
+    const dept = r.borrowerGroup || '미지정';
+    deptMap.set(dept, (deptMap.get(dept) || 0) + 1);
+  });
+
+  const activeRental = allRentals
+    .filter((r) => r.sampleCode === code && r.status !== '반납완료')
+    .sort((a, b) => b.rentDate.localeCompare(a.rentDate))[0];
+
+  return {
+    total: periodRentals.length,
+    trendPoints: buildRentalTrendSeries(periodRentals, period, start, end),
+    deptBreakdown: [...deptMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4),
+    activeRental,
+  };
+}
+
+function PopularSampleSparkline({ points, total }: { points: number[]; total: number }) {
+  const width = 120;
+  const height = 36;
+  const max = Math.max(...points, 1);
+  const polyline = points
+    .map((value, index) => {
+      const x = points.length <= 1 ? width / 2 : (index / (points.length - 1)) * width;
+      const y = height - (value / max) * (height - 6) - 3;
+      return `${x},${y}`;
+    })
+    .join(' ');
+
+  return (
+    <div className="relative rounded-md bg-slate-50 border border-slate-100 px-2 pt-2 pb-1 min-h-[44px]">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-9" aria-hidden="true">
+        <polyline fill="none" stroke="#8b5cf6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" points={polyline} />
+      </svg>
+      <span className="absolute right-2 bottom-1 text-[10px] font-extrabold text-violet-600">{total}회</span>
+    </div>
+  );
+}
+
 function WoWBadge({ delta, lowerIsBetter = false }: { delta: number; lowerIsBetter?: boolean }) {
   if (delta === 0) {
     return (
@@ -183,11 +299,17 @@ export default function DashboardView({
   // Overdue lists for alert panel
   const activeOverdues = rentals.filter((r) => effectiveRentalStatus(r, todayStr) === '연체중');
 
+  const [popularSamplePeriod, setPopularSamplePeriod] = useState<PopularSamplePeriod>('week');
+  const [expandedPopularCode, setExpandedPopularCode] = useState<string | null>(null);
+
   const popularSamplesTop5 = useMemo(() => {
+    const { start, end } = popularPeriodBounds(popularSamplePeriod, TODAY);
+    const periodRentals = rentals.filter((r) => inRange(r.rentDate, start, end));
+
     const rentalCounts = new Map<string, number>();
     const deptCountsBySample = new Map<string, Map<string, number>>();
 
-    rentals.forEach((r) => {
+    periodRentals.forEach((r) => {
       rentalCounts.set(r.sampleCode, (rentalCounts.get(r.sampleCode) || 0) + 1);
       const dept = r.borrowerGroup || '미지정';
       if (!deptCountsBySample.has(r.sampleCode)) deptCountsBySample.set(r.sampleCode, new Map());
@@ -204,17 +326,18 @@ export default function DashboardView({
     return [...rentalCounts.entries()]
       .map(([code, count]) => {
         const sample = samples.find((s) => s.code === code);
-        const rental = rentals.find((r) => r.sampleCode === code);
+        const rental = periodRentals.find((r) => r.sampleCode === code);
         return {
           code,
           name: sample?.name || rental?.sampleName || code,
           department: topDeptOf(code),
           count,
+          sample,
         };
       })
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
-  }, [rentals, samples]);
+  }, [rentals, samples, popularSamplePeriod]);
 
   // 기준일(시스템 표준일) 대비 연체 일수
   const overdueDaysOf = (r: Rental) => {
@@ -874,15 +997,14 @@ export default function DashboardView({
             sub: `평균 ${weekStats.avgOverdue.toFixed(1)}일 · 목표 0건`,
           },
           {
-            id: 'kpi-return', label: '이번 주 반납', val: weekStats.thisWeekReturn, unit: '건',
-            icon: CheckCircle2, color: 'text-indigo-600 bg-indigo-50', link: 'rentals' as const,
-            wow: weekStats.thisWeekReturn - weekStats.lastWeekReturn,
-            sub: `전주 ${weekStats.lastWeekReturn}건`,
+            id: 'kpi-lost', label: '분실', val: lostCount, unit: '건',
+            icon: ThumbsDown, color: 'text-slate-500 bg-slate-100', link: 'samples' as const,
+            sub: lostCount > 0 ? '분실 처리 샘플' : '분실 0건',
           },
           {
-            id: 'kpi-lost', label: '분실·부평', val: lostCount + bupyeongCount, unit: '건',
-            icon: ThumbsDown, color: 'text-slate-500 bg-slate-100', link: 'samples' as const,
-            sub: `분실 ${lostCount} · 부평 ${bupyeongCount}`,
+            id: 'kpi-bupyeong', label: '부평 보관', val: bupyeongCount, unit: '건',
+            icon: Package, color: 'text-amber-600 bg-amber-50', link: 'samples' as const,
+            sub: bupyeongCount > 0 ? '부평 창고 보관 중' : '보관 0건',
           },
         ]).map((kpi) => {
           const Icon = kpi.icon;
@@ -1325,37 +1447,146 @@ export default function DashboardView({
             </div>
 
             <div className="shrink-0 mt-4 flex-1 min-h-0 flex flex-col" id="popular-samples-panel">
-              <div className="flex items-center gap-2 mb-3 shrink-0">
-                <Flame className="w-4.5 h-4.5 text-violet-600 block shrink-0" />
-                <h3 className="text-sm font-extrabold text-slate-800">인기 샘플 TOP 5</h3>
+              <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Flame className="w-4.5 h-4.5 text-violet-600 block shrink-0" />
+                  <h3 className="text-sm font-extrabold text-slate-800 whitespace-nowrap">인기 샘플 TOP 5</h3>
+                </div>
+                <div className="inline-flex gap-1 p-1 bg-slate-100 rounded-xl shrink-0" id="popular-sample-period-tabs">
+                  {POPULAR_SAMPLE_PERIOD_OPTIONS.map((option) => {
+                    const isActive = popularSamplePeriod === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          setPopularSamplePeriod(option.id);
+                          setExpandedPopularCode(null);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer whitespace-nowrap ${
+                          isActive ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                        id={`popular-sample-period-${option.id}`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="rounded-xl border border-slate-100 bg-white p-4 flex-1 min-h-0 overflow-y-auto" id="popular-samples-list">
                 {popularSamplesTop5.length === 0 ? (
-                  <p className="text-[11px] text-slate-400 text-center py-6 font-medium">대여 이력이 없습니다.</p>
+                  <p className="text-[11px] text-slate-400 text-center py-6 font-medium">
+                    선택 기간에 대여 이력이 없습니다.
+                  </p>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="space-y-2">
                     {popularSamplesTop5.map((item, idx) => {
                       const rank = idx + 1;
                       const isTopThree = rank <= 3;
+                      const isExpanded = expandedPopularCode === item.code;
+                      const insights = getPopularSampleInsights(item.code, rentals, popularSamplePeriod, TODAY);
+                      const sample = item.sample;
+                      const isOnLoan = sample?.status === '대여중' || sample?.status === '연체중';
+                      const maxDeptCount = insights.deptBreakdown[0]?.[1] || 1;
                       return (
-                        <div key={item.code} className="flex items-center gap-3 min-w-0">
-                          <span
-                            className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold shrink-0 ${
-                              isTopThree
-                                ? 'bg-violet-600 text-white'
-                                : 'bg-slate-100 text-slate-500 border border-slate-200'
-                            }`}
+                        <div
+                          key={item.code}
+                          className={`rounded-xl border transition-colors ${
+                            isExpanded ? 'border-slate-200 bg-slate-50/80' : 'border-transparent hover:border-slate-100 hover:bg-slate-50/60'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedPopularCode((prev) => (prev === item.code ? null : item.code))
+                            }
+                            className="w-full flex items-center gap-3 min-w-0 px-2 py-2 text-left cursor-pointer"
+                            id={`popular-sample-row-${item.code}`}
                           >
-                            {rank}
-                          </span>
-                          <span className="text-[12px] font-bold text-slate-800 truncate flex-1 min-w-0" title={item.name}>
-                            {item.name}
-                          </span>
-                          <span className="text-[11px] font-bold shrink-0 whitespace-nowrap">
-                            <span className="text-violet-600">{item.department}</span>
-                            <span className="text-slate-800 ml-1">{item.count}회</span>
-                          </span>
+                            <span
+                              className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold shrink-0 ${
+                                isTopThree
+                                  ? 'bg-violet-600 text-white'
+                                  : 'bg-slate-100 text-slate-500 border border-slate-200'
+                              }`}
+                            >
+                              {rank}
+                            </span>
+                            <span className="text-[12px] font-bold text-slate-800 truncate flex-1 min-w-0" title={item.name}>
+                              {item.name}
+                            </span>
+                            <span className="text-[11px] font-bold shrink-0 whitespace-nowrap">
+                              <span className="text-violet-600">{item.department}</span>
+                              <span className="text-slate-800 ml-1">{item.count}회</span>
+                            </span>
+                            <ChevronDown
+                              className={`w-4 h-4 shrink-0 text-slate-400 transition-transform ${
+                                isExpanded ? 'rotate-180 text-violet-600' : ''
+                              }`}
+                            />
+                          </button>
+
+                          {isExpanded && (
+                            <div className="px-3 pb-3 pt-2 border-t border-slate-100 space-y-2.5" id={`popular-sample-detail-${item.code}`}>
+                              <div className="rounded-lg border border-slate-100 bg-white p-2.5">
+                                <div className={`grid gap-2 ${isOnLoan && insights.activeRental ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                                  <div>
+                                    <span className="text-[8px] font-bold text-slate-400 block mb-1">대여 상태</span>
+                                    {sample?.status ? (
+                                      <span className={`inline-flex text-[10px] font-bold py-1 px-2.5 rounded-full border ${sampleStatusBadgeClass(sample.status)}`}>
+                                        {sampleStatusLabel(sample.status)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-slate-400">-</span>
+                                    )}
+                                  </div>
+                                  {isOnLoan && insights.activeRental && (
+                                    <div className="min-w-0">
+                                      <span className="text-[8px] font-bold text-slate-400 block mb-1">현재 대여자</span>
+                                      <p className="text-[10px] font-extrabold text-slate-800 truncate">{insights.activeRental.borrowerName}</p>
+                                      <p className="text-[9px] text-slate-500 font-mono truncate">
+                                        ~{insights.activeRental.dueDate} {formatDueCountdownLabel(insights.activeRental.dueDate, TODAY)}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="rounded-lg border border-slate-100 bg-white p-2.5">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="min-w-0">
+                                    <span className="text-[8px] font-bold text-slate-400 block mb-1">최근 대여 추이</span>
+                                    <PopularSampleSparkline points={insights.trendPoints} total={insights.total} />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <span className="text-[8px] font-bold text-slate-400 block mb-1.5">대여 부서 분포</span>
+                                    {insights.deptBreakdown.length === 0 ? (
+                                      <p className="text-[9px] text-slate-400 py-3">부서 데이터 없음</p>
+                                    ) : (
+                                      <div className="space-y-1.5">
+                                        {insights.deptBreakdown.map(([dept, count]) => (
+                                          <div key={dept} className="flex items-center gap-1.5 min-w-0">
+                                            <span className="w-[52px] shrink-0 text-[8px] font-semibold text-slate-500 truncate" title={dept}>
+                                              {dept}
+                                            </span>
+                                            <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden min-w-0">
+                                              <div
+                                                className="h-full bg-violet-400 rounded-full"
+                                                style={{ width: `${Math.max(8, (count / maxDeptCount) * 100)}%` }}
+                                              />
+                                            </div>
+                                            <span className="w-3 shrink-0 text-[8px] font-bold text-slate-600 text-right">{count}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}

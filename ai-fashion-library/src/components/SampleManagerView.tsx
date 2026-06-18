@@ -9,6 +9,11 @@ import {
 import { Sample, SampleStatus, Rental, Category, AiTagGroups, AiTagCategory, sampleStatusLabel } from '../types';
 import { DateRangeCalendar } from './DateRangeCalendar';
 
+/** 상품 목록 테이블 — 탭/필터 전환 시 열 너비가 흔들리지 않도록 고정 */
+const SAMPLE_LIST_TABLE_MIN_W = 'min-w-[1180px]';
+const SAMPLE_LIST_TABLE_HEAD =
+  'bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider font-sans text-left';
+
 // AI 생성 태그 카테고리 정의 (표시 순서, 한글 라벨, 입력 안내 문구)
 const AI_TAG_CATEGORIES: { key: AiTagCategory; label: string; placeholder: string }[] = [
   { key: 'fit', label: '핏', placeholder: '착용하였을 때의 전체적인 핏을 입력하세요' },
@@ -496,8 +501,8 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
       const str = v == null ? '' : String(v);
       return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
     };
-    const rows = target.map((s) => [
-      s.id, s.code, s.name, s.category, s.brand, s.specialBrand || '', s.locationNo,
+    const rows = target.map((s, idx) => [
+      idx + 1, s.code, s.name, s.category, s.brand, s.specialBrand || '', s.locationNo,
       s.country, s.material, s.color, s.condition || '아주 좋음', s.status, s.regDate, s.registerer,
     ].map(esc).join(','));
 
@@ -588,6 +593,8 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
     부평보관: samples.filter((s) => s.status === '부평보관').length,
     분실: samples.filter((s) => s.status === '분실').length,
   };
+
+  const allSampleStatusCount = samples.length;
 
   const STATUS_FILTER_CHIPS: { id: SampleStatus; label: string; active: string; idle: string }[] = [
     { id: '대여가능', label: '대여가능', active: 'bg-emerald-600 text-white', idle: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
@@ -1781,13 +1788,26 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
               </div>
 
-              {/* 상태 필터 칩 (대여/반납 현황과 동일 패턴) */}
-              <div className="flex flex-wrap gap-2 items-center pt-2.5 border-t border-slate-100" id="sample-status-chips">
+              {/* 상태 필터 칩 */}
+              <div className="flex flex-wrap gap-2 items-center pt-2.5 border-t border-slate-100 min-h-[38px]" id="sample-status-chips">
+                <button
+                  type="button"
+                  onClick={() => setSelectedStatus('전체')}
+                  className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
+                    selectedStatus === '전체'
+                      ? 'bg-black text-white'
+                      : 'bg-black/85 text-white hover:bg-black'
+                  }`}
+                  id="sample-status-tab-all"
+                >
+                  전체 {allSampleStatusCount}
+                </button>
+                <div className="hidden sm:block w-px h-5 bg-slate-200 mx-1 shrink-0" aria-hidden="true" />
                 {STATUS_FILTER_CHIPS.map((chip) => (
                   <button
                     key={chip.id}
                     type="button"
-                    onClick={() => setSelectedStatus(selectedStatus === chip.id ? '전체' : chip.id)}
+                    onClick={() => setSelectedStatus(chip.id)}
                     className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
                       selectedStatus === chip.id ? chip.active : chip.idle
                     }`}
@@ -1816,9 +1836,24 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                 <div className="space-y-4" id="samples-table-wrap">
                 <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden" id="samples-datagrid-card">
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse" id="samples-main-table">
+                    <table className={`w-full table-fixed text-left border-collapse ${SAMPLE_LIST_TABLE_MIN_W}`} id="samples-main-table">
+                      <colgroup>
+                        <col className="w-[40px]" />
+                        <col className="w-[44px]" />
+                        <col className="w-[118px]" />
+                        <col className="w-[76px]" />
+                        <col className="w-[220px]" />
+                        <col className="w-[88px]" />
+                        <col className="w-[96px]" />
+                        <col className="w-[88px]" />
+                        <col className="w-[72px]" />
+                        <col className="w-[148px]" />
+                        <col className="w-[72px]" />
+                        <col className="w-[80px]" />
+                        <col className="w-[68px]" />
+                      </colgroup>
                       <thead>
-                        <tr className="bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider font-sans text-left">
+                        <tr className={SAMPLE_LIST_TABLE_HEAD}>
                           <th className="py-3 px-3 text-center w-10">
                             <input
                               type="checkbox"
@@ -1861,7 +1896,8 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                             </td>
                           </tr>
                         ) : (
-                          pagedSamples.map((sample) => {
+                          pagedSamples.map((sample, index) => {
+                            const rowNo = (safePage - 1) * pageSize + index + 1;
                             return (
                               <tr key={sample.id} className={`hover:bg-slate-50/70 transition-colors ${selectedIds.has(sample.id) ? 'bg-violet-50/40' : ''}`} id={`tbl-row-${sample.id}`}>
                                 <td className="py-3.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
@@ -1872,11 +1908,11 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                                     className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
                                   />
                                 </td>
-                                <td className="py-3.5 pl-2.5 pr-1 text-left font-mono text-slate-400 text-[11px]">{sample.id}</td>
+                                <td className="py-3.5 pl-2.5 pr-1 text-left font-mono text-slate-400 text-[11px]">{rowNo}</td>
                                 <td 
-                                  className="py-3.5 pl-1 pr-2.5 text-left font-mono font-bold text-indigo-650 hover:text-indigo-850 hover:underline cursor-pointer"
+                                  className="py-3.5 pl-1 pr-2.5 text-left font-mono font-bold text-indigo-650 hover:text-indigo-850 hover:underline cursor-pointer truncate max-w-0"
                                   onClick={() => setEditingSample(sample)}
-                                  title="상세 편집"
+                                  title={sample.code}
                                 >
                                   {sample.code}
                                 </td>
@@ -1922,11 +1958,11 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                                   })()}
                                 </td>
                                 <td 
-                                  className="py-3.5 px-2.5 text-left cursor-pointer group/row" 
+                                  className="py-3.5 px-2.5 text-left cursor-pointer group/row max-w-0" 
                                   onClick={() => setEditingSample(sample)}
-                                  title="상세 편집"
+                                  title={sample.name || '상세 편집'}
                                 >
-                                  <div className="font-semibold text-slate-800 group-hover/row:text-indigo-650 transition-colors whitespace-nowrap">{sample.name || '-'}</div>
+                                  <div className="font-semibold text-slate-800 group-hover/row:text-indigo-650 transition-colors truncate">{sample.name || '-'}</div>
                                 </td>
                                 <td className="py-3.5 px-2.5 text-left">
                                   <span className="text-xs text-slate-600 bg-slate-100 py-0.5 px-2 rounded-md font-medium">
@@ -1934,12 +1970,12 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                                   </span>
                                 </td>
                                 <td className="py-3.5 px-2.5 text-left font-semibold text-slate-700 whitespace-nowrap">{sample.brand}</td>
-                                <td className="py-3.5 px-2.5 text-left font-semibold text-slate-700 whitespace-nowrap">{sample.specialBrand || '-'}</td>
+                                <td className="py-3.5 px-2.5 text-left font-semibold text-slate-700 truncate max-w-0" title={sample.specialBrand || undefined}>{sample.specialBrand || '-'}</td>
                                 <td className="py-3.5 px-2.5 font-mono text-slate-600 text-[11px] text-left">{sample.locationNo || '-'}</td>
                                 <td className="py-3.5 px-2.5 text-left font-mono text-slate-400 text-[11px] whitespace-nowrap">{sample.regDate}</td>
                                 <td className="py-3.5 px-2.5 text-left text-slate-600 text-[11px] whitespace-nowrap">{sample.registerer || '-'}</td>
                                 <td className="py-3.5 px-2.5 text-left">
-                                  <span className={`text-[11px] font-bold py-1 px-2.5 rounded-full border ${getStatusBadgeStyle(sample.status)}`}>
+                                  <span className={`inline-flex items-center justify-center min-w-[4.25rem] text-[11px] font-bold py-1 px-2.5 rounded-full border whitespace-nowrap ${getStatusBadgeStyle(sample.status)}`}>
                                     {sampleStatusLabel(sample.status)}
                                   </span>
                                 </td>

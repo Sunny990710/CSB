@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   X, Check, Clock, AlertCircle, RefreshCw, CheckCircle2,
-  Search, Package, FileText, Printer, Download, PenLine, Trash2, ChevronDown,
+  Search, Package, FileText, Printer, Download, PenLine, Trash2, ChevronDown, Sparkles,
 } from 'lucide-react';
 import { Sample, Rental, RentalAgreement, RentalAgreementItem, Member, Category, LossDamageReport, rentalStatusLabel, effectiveRentalStatus } from '../types';
 import { DateRangeCalendar } from './DateRangeCalendar';
@@ -22,19 +22,13 @@ interface RentalManagerViewProps {
 }
 
 type StatusTab = 'pending' | 'available' | 'active' | 'overdue' | 'bupyeong' | 'lost';
-type PendingSubTab = 'approval' | 'signature' | 'rejected';
+type PendingSubTab = 'waiting' | 'approved' | 'rejected';
 
 type PendingRow = {
   rowKey: string;
   agreement: RentalAgreement;
   item: RentalAgreementItem;
 };
-
-const APPROVAL_STATUS_CHIPS: { id: PendingSubTab; label: string; active: string; idle: string }[] = [
-  { id: 'signature', label: '대기', active: 'bg-amber-600 text-white', idle: 'bg-amber-50 text-amber-700 hover:bg-amber-100' },
-  { id: 'approval', label: '승인', active: 'bg-violet-600 text-white', idle: 'bg-violet-50 text-violet-700 hover:bg-violet-100' },
-  { id: 'rejected', label: '반려', active: 'bg-slate-600 text-white', idle: 'bg-slate-100 text-slate-700 hover:bg-slate-200' },
-];
 
 const RENTAL_STATUS_TAB_CHIPS: { id: Exclude<StatusTab, 'pending'>; label: string; active: string; idle: string }[] = [
   { id: 'available', label: '대여가능', active: 'bg-emerald-600 text-white', idle: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
@@ -56,9 +50,12 @@ const AGREEMENT_TERMS = [
   '본 동의서에 전자서명함으로써 위 사항을 확인하였으며, 관련 규정을 준수할 것에 동의합니다.',
 ];
 
-const rentPeriodLabel = (days: number) => {
-  if (days % 7 === 0 && days >= 7) return `${days / 7}주`;
-  return `${days}일`;
+const DEFAULT_RENT_DAYS = 28;
+
+const rentPeriodLabel = (days?: number) => {
+  const d = days && days > 0 ? days : DEFAULT_RENT_DAYS;
+  if (d % 7 === 0 && d >= 7) return `${d / 7}주`;
+  return `${d}일`;
 };
 
 const todayStr = () => new Date().toISOString().substring(0, 10);
@@ -80,6 +77,19 @@ const overdueDaysOfRental = (r: Rental, refDate: string) => {
   const end = r.returnDate || refDate;
   const diff = Math.floor((parseDateOnly(end) - parseDateOnly(r.dueDate)) / MS_DAY);
   return diff > 0 ? diff : 0;
+};
+
+const getOverdueWeek = (daysOverdue: number): 1 | 2 | 3 | 4 => {
+  if (daysOverdue <= 6) return 1;
+  if (daysOverdue <= 13) return 2;
+  if (daysOverdue <= 19) return 3;
+  return 4;
+};
+
+const emailTypeForOverdueWeek = (week: 1 | 2 | 3 | 4): 'gentle' | 'warning' | 'strict' => {
+  if (week <= 2) return 'gentle';
+  if (week === 3) return 'warning';
+  return 'strict';
 };
 
 const formatDDay = (daysLeft: number) => {
@@ -114,7 +124,7 @@ export default function RentalManagerView({
   onRefreshData,
 }: RentalManagerViewProps) {
   const [statusTab, setStatusTab] = useState<StatusTab>('pending');
-  const [pendingSubTab, setPendingSubTab] = useState<PendingSubTab>('approval');
+  const [pendingSubTab, setPendingSubTab] = useState<PendingSubTab>('waiting');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('전체');
   const [selectedCountry, setSelectedCountry] = useState('전체');
@@ -130,8 +140,11 @@ export default function RentalManagerView({
   const [currentPage, setCurrentPage] = useState(1);
   const [signingAgreementId, setSigningAgreementId] = useState<string | null>(null);
   const [approvingAgreementId, setApprovingAgreementId] = useState<string | null>(null);
+  const [bulkApproving, setBulkApproving] = useState(false);
   const [rejectingAgreementId, setRejectingAgreementId] = useState<string | null>(null);
+  const [deletingAgreementId, setDeletingAgreementId] = useState<string | null>(null);
   const [markingLostId, setMarkingLostId] = useState<string | null>(null);
+  const [sendingEmailRentalId, setSendingEmailRentalId] = useState<string | null>(null);
   const [viewAgreement, setViewAgreement] = useState<RentalAgreement | null>(null);
   const [lossReportRental, setLossReportRental] = useState<Rental | null>(null);
   const [viewLossReport, setViewLossReport] = useState<LossDamageReport | null>(null);
@@ -151,10 +164,8 @@ export default function RentalManagerView({
   const isAgreementRejected = (agreement: RentalAgreement) => agreement.approvalStatus === 'rejected';
   const isPendingApproval = (agreement: RentalAgreement) =>
     !isAgreementApproved(agreement) && !isAgreementRejected(agreement);
-  const isAwaitingApproval = (agreement: RentalAgreement) =>
+  const isAwaitingAdminDecision = (agreement: RentalAgreement) =>
     agreement.signatureStatus === 'signed' && isPendingApproval(agreement);
-  const isAwaitingSignature = (agreement: RentalAgreement) =>
-    agreement.signatureStatus === 'pending' && isPendingApproval(agreement);
 
   const matchSearch = (query: string, ...values: (string | undefined)[]) => {
     if (!query.trim()) return true;
@@ -215,6 +226,11 @@ export default function RentalManagerView({
 
   const relatedSamples = useMemo(() => samples, [samples]);
 
+  const getAgreementItemProductName = (item: RentalAgreementItem) => {
+    const sample = samples.find((s) => s.code === item.sampleCode);
+    return sample?.name || item.sampleName || '-';
+  };
+
   const uniqueBrands = useMemo(
     () => ['전체', ...Array.from(new Set(relatedSamples.map((s) => s.brand).filter(Boolean))).sort()],
     [relatedSamples]
@@ -239,8 +255,8 @@ export default function RentalManagerView({
       })
       .sort((a, b) => (b.createdAt || b.rentDate).localeCompare(a.createdAt || a.rentDate));
 
-  const baseAwaitingApprovalAgreements = filterAgreementsBySearch(rentalAgreements.filter(isAwaitingApproval));
-  const baseAwaitingSignatureAgreements = filterAgreementsBySearch(rentalAgreements.filter(isAwaitingSignature));
+  const baseWaitingAgreements = filterAgreementsBySearch(rentalAgreements.filter(isPendingApproval));
+  const baseApprovedAgreements = filterAgreementsBySearch(rentalAgreements.filter(isAgreementApproved));
   const baseRejectedAgreements = filterAgreementsBySearch(rentalAgreements.filter(isAgreementRejected));
 
   const baseActiveRentals = rentals
@@ -308,22 +324,9 @@ export default function RentalManagerView({
         }))
     );
 
-  const approvalPendingRows = buildPendingRows(baseAwaitingApprovalAgreements);
-  const signaturePendingRows = buildPendingRows(baseAwaitingSignatureAgreements);
+  const waitingPendingRows = buildPendingRows(baseWaitingAgreements);
+  const approvedPendingRows = buildPendingRows(baseApprovedAgreements);
   const rejectedPendingRows = buildPendingRows(baseRejectedAgreements);
-
-  const pendingSubTabCounts = {
-    approval: approvalPendingRows.length,
-    signature: signaturePendingRows.length,
-    rejected: rejectedPendingRows.length,
-  };
-
-  const selectPendingSubTab = (sub: PendingSubTab) => {
-    setStatusTab('pending');
-    setPendingSubTab(sub);
-    setSelectedRowKeys(new Set());
-    setCurrentPage(1);
-  };
 
   const selectRentalStatusTab = (tab: Exclude<StatusTab, 'pending'>) => {
     setStatusTab(tab);
@@ -331,12 +334,28 @@ export default function RentalManagerView({
     setCurrentPage(1);
   };
 
+  const selectAllRentalStatus = () => {
+    setStatusTab('pending');
+    setSelectedRowKeys(new Set());
+    setCurrentPage(1);
+  };
+
   const pendingRows =
-    pendingSubTab === 'approval'
-      ? approvalPendingRows
-      : pendingSubTab === 'signature'
-        ? signaturePendingRows
+    pendingSubTab === 'waiting'
+      ? waitingPendingRows
+      : pendingSubTab === 'approved'
+        ? approvedPendingRows
         : rejectedPendingRows;
+
+  const selectedApprovableCount = useMemo(() => {
+    const agreementIds = new Set<string>();
+    pendingRows.forEach(({ rowKey, agreement }) => {
+      if (selectedRowKeys.has(rowKey) && isAwaitingAdminDecision(agreement)) {
+        agreementIds.add(agreement.agreementId);
+      }
+    });
+    return agreementIds.size;
+  }, [pendingRows, selectedRowKeys]);
 
   const tabCounts = {
     available: baseAvailableSamples.length,
@@ -345,6 +364,9 @@ export default function RentalManagerView({
     bupyeong: baseBupyeongSamples.length,
     lost: baseLostSamples.length,
   };
+
+  const allRentalStatusCount =
+    tabCounts.available + tabCounts.active + tabCounts.overdue + tabCounts.bupyeong + tabCounts.lost;
 
   const activeRentals = baseActiveRentals.filter((r) =>
     matchesDetailFilters(r.sampleCode, { brand: r.sampleBrand, dateFallback: r.rentDate })
@@ -427,7 +449,19 @@ export default function RentalManagerView({
 
     if (statusTab === 'pending') {
       if (pendingSubTab === 'rejected') {
-        headers = ['상품코드', '상품명', '브랜드', '대여자', '신청일', '대여기간', '서명', '반려일', '반려자'];
+        headers = ['상품코드', '상품명', '브랜드', '대여자', '신청일', '대여기간', '반려일', '반려사유'];
+        rows = pendingRows.map(({ agreement, item }) => [
+          item.sampleCode,
+          item.sampleName,
+          item.brand || agreement.brand,
+          agreement.borrowerName,
+          agreement.createdAt || agreement.rentDate,
+          rentPeriodLabel(agreement.rentDays),
+          agreement.rejectedAt || '-',
+          agreement.rejectedReason || '-',
+        ]);
+      } else if (pendingSubTab === 'approved') {
+        headers = ['상품코드', '상품명', '브랜드', '대여자', '신청일', '대여기간', '서명', '승인일', '승인자'];
         rows = pendingRows.map(({ agreement, item }) => [
           item.sampleCode,
           item.sampleName,
@@ -436,8 +470,8 @@ export default function RentalManagerView({
           agreement.createdAt || agreement.rentDate,
           rentPeriodLabel(agreement.rentDays),
           agreement.signatureStatus === 'signed' ? '서명완료' : '서명대기',
-          agreement.rejectedAt || '-',
-          agreement.rejectedBy || '-',
+          agreement.approvedAt || '-',
+          agreement.approvedBy || '-',
         ]);
       } else {
         headers = ['상품코드', '상품명', '브랜드', '대여자', '신청일', '대여기간', '서명', '처리상태'];
@@ -449,7 +483,7 @@ export default function RentalManagerView({
           agreement.createdAt || agreement.rentDate,
           rentPeriodLabel(agreement.rentDays),
           agreement.signatureStatus === 'signed' ? '서명완료' : '서명대기',
-          pendingSubTab === 'approval' ? '승인 대기' : '서명 대기',
+          agreement.signatureStatus === 'signed' ? '승인·반려 대기' : '서명 대기',
         ]);
       }
     } else if (statusTab === 'active') {
@@ -577,8 +611,116 @@ export default function RentalManagerView({
     );
   };
 
-  const findAgreement = (rental: Rental) =>
-    rental.agreementId ? rentalAgreements.find((a) => a.agreementId === rental.agreementId) : undefined;
+  const findAgreement = (rental: Rental): RentalAgreement | undefined => {
+    if (rental.agreementId) {
+      const byId = rentalAgreements.find((a) => a.agreementId === rental.agreementId);
+      if (byId) return byId;
+    }
+
+    const matched = rentalAgreements.find(
+      (a) =>
+        a.approvalStatus === 'approved' &&
+        a.borrowerId === rental.borrowerId &&
+        a.items.some((item) => item.sampleCode === rental.sampleCode) &&
+        a.rentDate === rental.rentDate
+    );
+    if (matched) return matched;
+
+    const sample = sampleOf(rental.sampleCode);
+    const member = members.find((m) => m.memberId === rental.borrowerId);
+    const rentDays =
+      rental.dueDate && rental.rentDate
+        ? Math.max(1, Math.floor((parseDateOnly(rental.dueDate) - parseDateOnly(rental.rentDate)) / MS_DAY))
+        : DEFAULT_RENT_DAYS;
+
+    return {
+      agreementId: rental.agreementId || `A-${rental.rentalId}`,
+      borrowerId: rental.borrowerId,
+      borrowerName: rental.borrowerName,
+      borrowerEmail: rental.borrowerEmail,
+      borrowerAffiliation: member?.affiliation || rental.borrowerGroup,
+      brand: rental.sampleBrand,
+      purpose: '샘플 대여',
+      rentDate: rental.rentDate,
+      dueDate: rental.dueDate,
+      rentDays,
+      quantity: 1,
+      items: [
+        {
+          sampleCode: rental.sampleCode,
+          sampleName: rental.sampleName,
+          category: sample?.category || '오리지널',
+          brand: rental.sampleBrand,
+        },
+      ],
+      signatureStatus: 'signed',
+      signedAt: rental.rentDate,
+      signedBy: rental.borrowerName,
+      approvalStatus: 'approved',
+      approvedAt: rental.rentDate,
+      approvedBy: '관리자',
+      createdAt: rental.rentDate,
+    };
+  };
+
+  const sendOverdueNotification = async (rental: Rental): Promise<boolean> => {
+    const daysOverdue = Math.max(1, overdueDaysOfRental(rental, today));
+    const week = getOverdueWeek(daysOverdue);
+    const tone = emailTypeForOverdueWeek(week);
+
+    const draftRes = await fetch('/api/agent/draft-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        borrowerName: rental.borrowerName,
+        borrowerGroup: rental.borrowerGroup,
+        sampleName: rental.sampleName,
+        sampleCode: rental.sampleCode,
+        dueDate: rental.dueDate,
+        daysOverdue,
+        emailType: tone,
+      }),
+    });
+    const draftData = await draftRes.json();
+
+    const sendRes = await fetch('/api/agent/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rentalId: rental.rentalId,
+        subject: draftData.subject || `[반납 촉구 안내] 대여하신 의류 샘플 반납 기한 경과 안내`,
+        content:
+          draftData.content ||
+          `안녕하세요, ${rental.borrowerName}님.\n\n대여 중인 의류 샘플의 빠른 반납 부탁드립니다.`,
+      }),
+    });
+    const sendData = await sendRes.json();
+
+    if (!sendData.success) {
+      flashFeedback('error', sendData.message || '메일 발송에 실패했습니다.');
+      return false;
+    }
+    return true;
+  };
+
+  const handleSendOverdueEmail = async (rental: Rental) => {
+    const label = rental.notifyCount ? '재발송' : '발송';
+    if (!confirm(`${rental.borrowerName} 님에게 반납 요청 메일을 ${label}하시겠습니까?`)) return;
+
+    setSendingEmailRentalId(rental.rentalId);
+    try {
+      const ok = await sendOverdueNotification(rental);
+      if (ok) {
+        flashFeedback('ok', `${rental.borrowerName} 님에게 반납 요청 메일이 발송되었습니다.`);
+        await onRefreshData?.();
+      }
+    } catch (err) {
+      console.error(err);
+      flashFeedback('error', '반납 요청 메일 전송 중 오류가 발생했습니다.');
+    } finally {
+      setSendingEmailRentalId(null);
+    }
+  };
 
   const handleSignAgreement = async (agreement: RentalAgreement) => {
     if (!agreeChecked) {
@@ -630,6 +772,9 @@ export default function RentalManagerView({
         if (viewAgreement?.agreementId === agreement.agreementId) {
           setViewAgreement(data.agreement);
         }
+        setPendingSubTab('approved');
+        setSelectedRowKeys(new Set());
+        setCurrentPage(1);
         onRefreshData?.();
       } else {
         flashFeedback('error', data.message || '대여 승인에 실패했습니다.');
@@ -642,15 +787,72 @@ export default function RentalManagerView({
     }
   };
 
+  const handleBulkApprove = async () => {
+    const agreementMap = new Map<string, RentalAgreement>();
+    pendingRows.forEach(({ rowKey, agreement }) => {
+      if (selectedRowKeys.has(rowKey) && isAwaitingAdminDecision(agreement)) {
+        agreementMap.set(agreement.agreementId, agreement);
+      }
+    });
+    const targets = [...agreementMap.values()];
+    if (targets.length === 0) {
+      flashFeedback('error', '승인할 항목을 선택해 주세요. (서명 완료된 건만 승인 가능)');
+      return;
+    }
+    if (!confirm(`선택한 ${targets.length}건의 대여 신청을 일괄 승인하시겠습니까?`)) return;
+
+    setBulkApproving(true);
+    let ok = 0;
+    const errors: string[] = [];
+    for (const agreement of targets) {
+      try {
+        const res = await fetch(`/api/rental-agreements/${agreement.agreementId}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ approvedBy: '관리자' }),
+        });
+        const data = await res.json();
+        if (data.success) ok += 1;
+        else errors.push(data.message || `${agreement.agreementId} 승인 실패`);
+      } catch (err) {
+        console.error(err);
+        errors.push(`${agreement.agreementId} 처리 중 오류`);
+      }
+    }
+    setBulkApproving(false);
+
+    if (ok > 0) {
+      flashFeedback(
+        'ok',
+        errors.length > 0
+          ? `${ok}건 승인 완료 · ${errors.length}건 실패`
+          : `${ok}건 일괄 승인이 완료되었습니다.`,
+      );
+      setPendingSubTab('approved');
+      setSelectedRowKeys(new Set());
+      setCurrentPage(1);
+      onRefreshData?.();
+    } else {
+      flashFeedback('error', errors[0] || '일괄 승인에 실패했습니다.');
+    }
+  };
+
   const handleRejectAgreement = async (agreement: RentalAgreement) => {
-    if (!confirm(`${agreement.borrowerName} 님 대여 신청(${agreement.agreementId})을 반려하시겠습니까?`)) return;
+    const reasonInput = window.prompt(`${agreement.borrowerName} 님 대여 신청(${agreement.agreementId}) 반려 사유를 입력해 주세요.`);
+    if (reasonInput === null) return;
+    const rejectedReason = reasonInput.trim();
+    if (!rejectedReason) {
+      flashFeedback('error', '반려 사유를 입력해 주세요.');
+      return;
+    }
+    if (!confirm(`입력한 사유로 반려하시겠습니까?\n\n${rejectedReason}`)) return;
 
     setRejectingAgreementId(agreement.agreementId);
     try {
       const res = await fetch(`/api/rental-agreements/${agreement.agreementId}/reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rejectedBy: '관리자' }),
+        body: JSON.stringify({ rejectedBy: '관리자', rejectedReason }),
       });
       const data = await res.json();
       if (data.success) {
@@ -670,6 +872,28 @@ export default function RentalManagerView({
       flashFeedback('error', '반려 처리 중 오류가 발생했습니다.');
     } finally {
       setRejectingAgreementId(null);
+    }
+  };
+
+  const handleDeleteRejectedAgreement = async (agreement: RentalAgreement) => {
+    if (!confirm(`${agreement.borrowerName} 님 반려 신청(${agreement.agreementId})을 삭제하시겠습니까?`)) return;
+
+    setDeletingAgreementId(agreement.agreementId);
+    try {
+      const res = await fetch(`/api/rental-agreements/${agreement.agreementId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        flashFeedback('ok', data.message || '반려 신청이 삭제되었습니다.');
+        setSelectedRowKeys(new Set());
+        onRefreshData?.();
+      } else {
+        flashFeedback('error', data.message || '삭제에 실패했습니다.');
+      }
+    } catch (err) {
+      console.error(err);
+      flashFeedback('error', '삭제 처리 중 오류가 발생했습니다.');
+    } finally {
+      setDeletingAgreementId(null);
     }
   };
 
@@ -742,25 +966,10 @@ export default function RentalManagerView({
 
   const renderAgreementCell = (rental: Rental) => {
     const agreement = findAgreement(rental);
-    if (!agreement) {
-      return <span className="text-slate-300 text-[11px]">-</span>;
-    }
-    if (agreement.signatureStatus === 'pending') {
-      return (
-        <button
-          type="button"
-          onClick={() => openAgreementModal(agreement)}
-          className="inline-flex items-center gap-1 text-[11px] font-bold text-violet-600 hover:text-violet-800 cursor-pointer"
-        >
-          <FileText className="w-3.5 h-3.5" />
-          서명대기
-        </button>
-      );
-    }
     return (
       <button
         type="button"
-        onClick={() => openAgreementModal(agreement)}
+        onClick={() => openAgreementModal(agreement!)}
         className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 hover:text-indigo-600 cursor-pointer"
       >
         <FileText className="w-3.5 h-3.5" />
@@ -769,14 +978,67 @@ export default function RentalManagerView({
     );
   };
 
+  const renderOverdueActions = (rental: Rental) => {
+    const isSending = sendingEmailRentalId === rental.rentalId;
+    const hasNotified = (rental.notifyCount || 0) > 0;
+
+    return (
+      <button
+        type="button"
+        onClick={() => void handleSendOverdueEmail(rental)}
+        disabled={isSending}
+        className={`py-1.5 px-3 rounded-lg shadow-sm font-bold text-[11px] flex items-center gap-1 transition-colors active:scale-[0.98] cursor-pointer whitespace-nowrap disabled:opacity-50 ${
+          hasNotified
+            ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+            : 'bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100'
+        }`}
+        id={hasNotified ? `rental-overdue-resend-${rental.rentalId}` : `rental-overdue-send-${rental.rentalId}`}
+      >
+        {isSending ? (
+          <>
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            전송 중...
+          </>
+        ) : hasNotified ? (
+          <>
+            <Sparkles className="w-3.5 h-3.5" />
+            메일 재발송
+          </>
+        ) : (
+          <>
+            <AlertCircle className="w-3.5 h-3.5" />
+            메일 발송
+          </>
+        )}
+      </button>
+    );
+  };
+
   const renderPendingActions = (agreement: RentalAgreement) => {
-    if (pendingSubTab === 'signature') {
+    if (pendingSubTab === 'approved') {
       return (
-        <span className="text-[11px] font-bold text-amber-700 whitespace-nowrap">대여자 서명 대기</span>
+        <span className="text-[11px] font-bold text-violet-700 whitespace-nowrap">승인 완료</span>
       );
     }
     if (pendingSubTab === 'rejected') {
-      return <span className="text-slate-300 text-[11px]">—</span>;
+      const isDeleting = deletingAgreementId === agreement.agreementId;
+      return (
+        <button
+          type="button"
+          onClick={() => handleDeleteRejectedAgreement(agreement)}
+          disabled={isDeleting}
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 text-[10px] font-extrabold disabled:opacity-50 cursor-pointer"
+        >
+          {isDeleting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+          삭제
+        </button>
+      );
+    }
+
+    if (agreement.signatureStatus !== 'signed') {
+      return (
+        <span className="text-[11px] font-bold text-amber-700 whitespace-nowrap">대여자 서명 대기</span>
+      );
     }
 
     const isApproving = approvingAgreementId === agreement.agreementId;
@@ -806,13 +1068,13 @@ export default function RentalManagerView({
   };
 
   const pendingEmptyMessage =
-    pendingSubTab === 'approval'
-      ? '승인 대기 중인 대여 신청이 없습니다.'
-      : pendingSubTab === 'signature'
-        ? '서명 대기 중인 대여 신청이 없습니다.'
+    pendingSubTab === 'waiting'
+      ? '승인·반려 대기 중인 대여 신청이 없습니다.'
+      : pendingSubTab === 'approved'
+        ? '승인 완료된 대여 신청이 없습니다.'
         : '반려된 대여 신청이 없습니다.';
 
-  const pendingTableColSpan = pendingSubTab === 'rejected' ? 14 : 13;
+  const pendingTableColSpan = pendingSubTab === 'approved' ? 14 : 13;
 
   const renderPendingAgreementCell = (agreement: RentalAgreement) => (
     <button
@@ -1074,6 +1336,21 @@ export default function RentalManagerView({
               <span className="text-[11px] text-slate-400 font-extrabold font-mono uppercase tracking-wide whitespace-nowrap">
                 목록 {currentListCount.toLocaleString()}건
               </span>
+              {statusTab === 'pending' && pendingSubTab === 'waiting' && (
+                <button
+                  type="button"
+                  onClick={() => void handleBulkApprove()}
+                  disabled={bulkApproving || selectedApprovableCount === 0}
+                  className="flex items-center gap-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white py-1.5 px-3 rounded-lg text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shadow-3xs"
+                >
+                  {bulkApproving ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  )}
+                  일괄 승인{selectedApprovableCount > 0 ? ` (${selectedApprovableCount})` : ''}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleExcelDownload}
@@ -1099,22 +1376,20 @@ export default function RentalManagerView({
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2 items-center pt-0.5" id="rental-status-chips">
-            <div className="flex items-center gap-1.5 shrink-0" id="rental-approval-status-chips">
-              <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">승인 여부</span>
-              {APPROVAL_STATUS_CHIPS.map((chip) => (
-                <button
-                  key={chip.id}
-                  type="button"
-                  onClick={() => selectPendingSubTab(chip.id)}
-                  className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
-                    statusTab === 'pending' && pendingSubTab === chip.id ? chip.active : chip.idle
-                  }`}
-                  id={`rental-status-tab-pending-${chip.id}`}
-                >
-                  {chip.label} {pendingSubTabCounts[chip.id]}
-                </button>
-              ))}
+          <div className="flex flex-wrap gap-2 items-center pt-0.5 min-h-[38px]" id="rental-status-chips">
+            <div className="flex items-center gap-1.5 shrink-0" id="rental-rental-status-chips">
+              <button
+                type="button"
+                onClick={selectAllRentalStatus}
+                className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
+                  statusTab === 'pending'
+                    ? 'bg-black text-white'
+                    : 'bg-black/85 text-white hover:bg-black'
+                }`}
+                id="rental-status-tab-all"
+              >
+                전체 {allRentalStatusCount}
+              </button>
             </div>
 
             <div className="hidden sm:block w-px h-5 bg-slate-200 mx-1 shrink-0" aria-hidden="true" />
@@ -1161,17 +1436,25 @@ export default function RentalManagerView({
                   <th className="py-3 px-2.5 whitespace-nowrap">대여자</th>
                   <th className="py-3 px-2.5 whitespace-nowrap">신청일</th>
                   <th className="py-3 px-2.5 whitespace-nowrap">대여기간</th>
-                  <th className="py-3 px-2.5 whitespace-nowrap">서명</th>
-                  <th className="py-3 px-2.5 whitespace-nowrap">동의서</th>
                   {pendingSubTab === 'rejected' ? (
                     <>
                       <th className="py-3 px-2.5 whitespace-nowrap">반려일</th>
-                      <th className="py-3 px-2.5 whitespace-nowrap">반려자</th>
+                      <th className="py-3 px-2.5 whitespace-nowrap">반려사유</th>
+                      <th className="py-3 px-2.5 whitespace-nowrap">동작</th>
                     </>
                   ) : (
-                    <th className="py-3 px-2.5 whitespace-nowrap">
-                      {pendingSubTab === 'signature' ? '상태' : '동작'}
-                    </th>
+                    <>
+                      <th className="py-3 px-2.5 whitespace-nowrap">서명</th>
+                      <th className="py-3 px-2.5 whitespace-nowrap">동의서</th>
+                      {pendingSubTab === 'approved' ? (
+                        <>
+                          <th className="py-3 px-2.5 whitespace-nowrap">승인일</th>
+                          <th className="py-3 px-2.5 whitespace-nowrap">승인자</th>
+                        </>
+                      ) : (
+                        <th className="py-3 px-2.5 whitespace-nowrap">동작</th>
+                      )}
+                    </>
                   )}
                 </tr>
               </thead>
@@ -1226,29 +1509,45 @@ export default function RentalManagerView({
                         <td className="py-3.5 px-2.5 font-bold text-slate-700 whitespace-nowrap">
                           {rentPeriodLabel(agreement.rentDays)}
                         </td>
-                        <td className="py-3.5 px-2.5">
-                          {agreement.signatureStatus === 'signed' ? (
-                            <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-100">
-                              서명완료
-                            </span>
-                          ) : (
-                            <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-amber-50 text-amber-700 border-amber-100">
-                              서명대기
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-3.5 px-2.5">{renderPendingAgreementCell(agreement)}</td>
                         {pendingSubTab === 'rejected' ? (
                           <>
                             <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">
                               {agreement.rejectedAt || '-'}
                             </td>
-                            <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">
-                              {agreement.rejectedBy || '-'}
+                            <td className="py-3.5 px-2.5 text-slate-700 text-[11px] max-w-[220px]">
+                              <div className="truncate font-medium" title={agreement.rejectedReason || undefined}>
+                                {agreement.rejectedReason || '-'}
+                              </div>
                             </td>
+                            <td className="py-3.5 px-2.5">{renderPendingActions(agreement)}</td>
                           </>
                         ) : (
-                          <td className="py-3.5 px-2.5">{renderPendingActions(agreement)}</td>
+                          <>
+                            <td className="py-3.5 px-2.5">
+                              {agreement.signatureStatus === 'signed' ? (
+                                <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-100">
+                                  서명완료
+                                </span>
+                              ) : (
+                                <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-amber-50 text-amber-700 border-amber-100">
+                                  서명대기
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-2.5">{renderPendingAgreementCell(agreement)}</td>
+                            {pendingSubTab === 'approved' ? (
+                              <>
+                                <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">
+                                  {agreement.approvedAt || '-'}
+                                </td>
+                                <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">
+                                  {agreement.approvedBy || '-'}
+                                </td>
+                              </>
+                            ) : (
+                              <td className="py-3.5 px-2.5">{renderPendingActions(agreement)}</td>
+                            )}
+                          </>
                         )}
                       </tr>
                     );
@@ -1546,21 +1845,7 @@ export default function RentalManagerView({
                           </span>
                         </td>
                         <td className="py-3.5 px-2.5">{renderAgreementCell(rental)}</td>
-                        <td className="py-3.5 px-2.5">
-                          <button
-                            type="button"
-                            onClick={() => handleMarkLostDamage(rental)}
-                            disabled={markingLostId === rental.rentalId}
-                            className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-600 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 cursor-pointer whitespace-nowrap"
-                          >
-                            {markingLostId === rental.rentalId ? (
-                              <RefreshCw className="w-3 h-3 animate-spin" />
-                            ) : (
-                              <Trash2 className="w-3 h-3" />
-                            )}
-                            분실/훼손 처리
-                          </button>
-                        </td>
+                        <td className="py-3.5 px-2.5">{renderOverdueActions(rental)}</td>
                       </tr>
                     );
                   })
@@ -1589,7 +1874,7 @@ export default function RentalManagerView({
         const agreement = rentalAgreements.find((a) => a.agreementId === viewAgreement.agreementId) || viewAgreement;
         const isPendingSign = agreement.signatureStatus === 'pending';
         const isSigning = signingAgreementId === agreement.agreementId;
-        const awaitingApproval = isAwaitingApproval(agreement);
+        const awaitingApproval = isAwaitingAdminDecision(agreement);
         const approved = isAgreementApproved(agreement);
 
         return (
@@ -1645,6 +1930,7 @@ export default function RentalManagerView({
                           <th className="py-2 px-3 w-10">No</th>
                           <th className="py-2 px-3">아이템</th>
                           <th className="py-2 px-3">Sample NO.</th>
+                          <th className="py-2 px-3">상품명</th>
                           <th className="py-2 px-3">비고</th>
                         </tr>
                       </thead>
@@ -1654,7 +1940,8 @@ export default function RentalManagerView({
                             <td className="py-2 px-3 text-slate-400 font-mono">{idx + 1}</td>
                             <td className="py-2 px-3 font-semibold text-slate-800">{item.category}</td>
                             <td className="py-2 px-3 font-mono text-indigo-600">{item.sampleCode}</td>
-                            <td className="py-2 px-3 text-slate-500">{item.remark || item.sampleName || '-'}</td>
+                            <td className="py-2 px-3 font-semibold text-slate-800">{getAgreementItemProductName(item)}</td>
+                            <td className="py-2 px-3 text-slate-500">{item.remark || '-'}</td>
                           </tr>
                         ))}
                       </tbody>

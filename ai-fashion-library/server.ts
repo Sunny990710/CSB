@@ -684,12 +684,35 @@ app.post('/api/rental-agreements/:id/reject', async (req, res) => {
     return res.status(400).json({ success: false, message: '이미 승인된 동의서는 반려할 수 없습니다.' });
   }
 
+  const rejectedReason = String(req.body?.rejectedReason || req.body?.reason || '').trim();
+  if (!rejectedReason) {
+    return res.status(400).json({ success: false, message: '반려 사유를 입력해 주세요.' });
+  }
+
   agreement.approvalStatus = 'rejected';
   agreement.rejectedAt = formatDateOnly(new Date());
   agreement.rejectedBy = req.body?.rejectedBy || '관리자';
+  agreement.rejectedReason = rejectedReason;
 
   await saveDB(db);
   res.json({ success: true, agreement, message: '대여 신청이 반려되었습니다.' });
+});
+
+app.delete('/api/rental-agreements/:id', async (req, res) => {
+  const db = await getDB();
+  if (!db.rentalAgreements) db.rentalAgreements = [];
+
+  const idx = db.rentalAgreements.findIndex((a: any) => a.agreementId === req.params.id);
+  if (idx === -1) return res.status(404).json({ success: false, message: '동의서를 찾을 수 없습니다.' });
+
+  const agreement = db.rentalAgreements[idx];
+  if (agreement.approvalStatus !== 'rejected') {
+    return res.status(400).json({ success: false, message: '반려된 신청만 삭제할 수 있습니다.' });
+  }
+
+  db.rentalAgreements.splice(idx, 1);
+  await saveDB(db);
+  res.json({ success: true, message: '반려 신청이 삭제되었습니다.' });
 });
 
 // Mark rental as lost/damaged (sample → 분실) + 사유서 저장

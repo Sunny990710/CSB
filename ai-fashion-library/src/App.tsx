@@ -654,36 +654,43 @@ export default function App() {
                   </div>
                 )}
 
-                {activeTab === 'rental_status' && (
-                  <div id="rentals-subview-frame">
-                    <RentalManagerView
-                      viewMode="status"
-                      rentals={rentals}
-                      rentalAgreements={rentalAgreements}
-                      lossDamageReports={lossDamageReports}
-                      samples={samples}
-                      members={members}
-                      categories={categories}
-                      onSaveDB={(newRentals, newSamples) => handleSaveDB(newSamples, members, groups, newRentals)}
-                      onRefreshData={handleSilentRefresh}
-                    />
-                  </div>
-                )}
-
-                {activeTab === 'rental_documents' && (
-                  <div id="rentals-documents-subview-frame">
-                    <RentalManagerView
-                      viewMode="documents"
-                      rentals={rentals}
-                      rentalAgreements={rentalAgreements}
-                      lossDamageReports={lossDamageReports}
-                      samples={samples}
-                      members={members}
-                      categories={categories}
-                      onSaveDB={(newRentals, newSamples) => handleSaveDB(newSamples, members, groups, newRentals)}
-                      onRefreshData={handleSilentRefresh}
-                    />
-                  </div>
+                {['rental_status', 'rental_documents'].includes(activeTab) && (
+                  <>
+                    <div
+                      id="rentals-subview-frame"
+                      className={activeTab === 'rental_status' ? '' : 'hidden'}
+                      aria-hidden={activeTab !== 'rental_status'}
+                    >
+                      <RentalManagerView
+                        viewMode="status"
+                        rentals={rentals}
+                        rentalAgreements={rentalAgreements}
+                        lossDamageReports={lossDamageReports}
+                        samples={samples}
+                        members={members}
+                        categories={categories}
+                        onSaveDB={(newRentals, newSamples) => handleSaveDB(newSamples, members, groups, newRentals)}
+                        onRefreshData={handleSilentRefresh}
+                      />
+                    </div>
+                    <div
+                      id="rentals-documents-subview-frame"
+                      className={activeTab === 'rental_documents' ? '' : 'hidden'}
+                      aria-hidden={activeTab !== 'rental_documents'}
+                    >
+                      <RentalManagerView
+                        viewMode="documents"
+                        rentals={rentals}
+                        rentalAgreements={rentalAgreements}
+                        lossDamageReports={lossDamageReports}
+                        samples={samples}
+                        members={members}
+                        categories={categories}
+                        onSaveDB={(newRentals, newSamples) => handleSaveDB(newSamples, members, groups, newRentals)}
+                        onRefreshData={handleSilentRefresh}
+                      />
+                    </div>
+                  </>
                 )}
 
                 {activeTab === 'contents' && (

@@ -136,6 +136,7 @@ export interface RentalAgreement {
   approvalStatus?: 'pending' | 'approved' | 'rejected';
   rejectedAt?: string | null;
   rejectedBy?: string | null;
+  rejectedReason?: string | null;
   approvedAt?: string | null;
   approvedBy?: string | null;
   createdAt: string;
