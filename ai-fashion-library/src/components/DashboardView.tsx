@@ -1,27 +1,171 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { motion } from 'motion/react';
 import { 
-  Package, RefreshCw, AlertTriangle, Building, ThumbsDown, Calendar, 
+  Package, RefreshCw, AlertTriangle, ThumbsDown, Calendar, 
   Search, ArrowRight, UserCheck, Send, Mail, Sparkles, History, 
   User, Clock, MessageSquare, AlertCircle, Phone, ArrowUpRight, Check, CheckCircle2,
-  ArrowDownWideNarrow, ArrowUpNarrowWide
+  TrendingUp, TrendingDown, Minus,
+  ChevronRight, ChevronDown, X,
 } from 'lucide-react';
-import { Sample, Rental, Member } from '../types';
+import { Sample, Rental, Member, rentalStatusLabel, effectiveRentalStatus } from '../types';
 
 interface DashboardViewProps {
   samples: Sample[];
   rentals: Rental[];
-  members: Member[];
+  members?: Member[];
   onNavigateToRentals: () => void;
   onNavigateToSamples: () => void;
   showOnlyCharts?: boolean;
   onRefreshData?: () => void;
 }
 
+type ManagerTask = 'overdue' | 'due-soon';
+type OverdueWeekFilter = 1 | 2 | 3 | 4;
+type EscalationRole = 'director' | 'cdo' | 'brandHead';
+
+interface NotifyRecipient {
+  key: string;
+  roleLabel: string;
+  name: string;
+  email: string;
+}
+
+const OVERDUE_WEEK_RULES: Record<OverdueWeekFilter, { summary: string; ccRoles: EscalationRole[] }> = {
+  1: { summary: '경고 메일 (실장님 포함)', ccRoles: ['director'] },
+  2: { summary: '경고 메일 (실장, CDO님 포함)', ccRoles: ['director', 'cdo'] },
+  3: { summary: '경고 메일 (실장, CDO, 브랜드장님 포함)', ccRoles: ['director', 'cdo', 'brandHead'] },
+  4: { summary: '경고 메일 (실장, CDO, 브랜드장님 포함)', ccRoles: ['director', 'cdo', 'brandHead'] },
+};
+
+const RECIPIENT_ROLE_ORDER = ['대여자', '실장', 'CDO', '브랜드장'];
+
+function emailTypeForWeek(week: OverdueWeekFilter): 'gentle' | 'warning' | 'strict' {
+  if (week === 1) return 'gentle';
+  if (week === 4) return 'strict';
+  return 'warning';
+}
+
+function resolveDirector(members: Member[], groupName: string): NotifyRecipient {
+  const found = members.find(
+    (m) => m.useYn === '사용' && m.groupName === groupName && m.role && /실장|팀장|부장/.test(m.role)
+  );
+  if (found) {
+    return { key: `director-${found.memberId}`, roleLabel: '실장', name: found.name, email: found.email };
+  }
+  return { key: `director-${groupName}`, roleLabel: '실장', name: `${groupName} 실장`, email: '' };
+}
+
+function resolveCdo(members: Member[]): NotifyRecipient {
+  const found = members.find((m) => m.useYn === '사용' && m.groupName === 'CDO실');
+  if (found) {
+    return { key: `cdo-${found.memberId}`, roleLabel: 'CDO', name: found.name, email: found.email };
+  }
+  return { key: 'cdo-default', roleLabel: 'CDO', name: 'CDO님', email: '' };
+}
+
+function resolveBrandHead(members: Member[], rental: Rental): NotifyRecipient {
+  const brand = rental.sampleBrand || rental.borrowerGroup;
+  const found = members.find(
+    (m) =>
+      m.useYn === '사용' &&
+      ((m.brand && rental.sampleBrand && m.brand === rental.sampleBrand) || m.groupName === rental.borrowerGroup) &&
+      m.role &&
+      /브랜드|장/.test(m.role)
+  );
+  if (found) {
+    return { key: `brand-${found.memberId}`, roleLabel: '브랜드장', name: found.name, email: found.email };
+  }
+  return { key: `brand-${brand}`, roleLabel: '브랜드장', name: `${brand} 브랜드장`, email: '' };
+}
+
+function recipientsForRental(rental: Rental, week: OverdueWeekFilter, members: Member[]): NotifyRecipient[] {
+  const list: NotifyRecipient[] = [
+    {
+      key: `borrower-${rental.rentalId}`,
+      roleLabel: '대여자',
+      name: rental.borrowerName,
+      email: rental.borrowerEmail || '',
+    },
+  ];
+  const { ccRoles } = OVERDUE_WEEK_RULES[week];
+  if (ccRoles.includes('director')) list.push(resolveDirector(members, rental.borrowerGroup));
+  if (ccRoles.includes('cdo')) list.push(resolveCdo(members));
+  if (ccRoles.includes('brandHead')) list.push(resolveBrandHead(members, rental));
+  return list;
+}
+
+function aggregateNotifyRecipients(rentals: Rental[], week: OverdueWeekFilter, members: Member[]): NotifyRecipient[] {
+  const map = new Map<string, NotifyRecipient>();
+  rentals.forEach((rental) => {
+    recipientsForRental(rental, week, members).forEach((recipient) => {
+      if (!map.has(recipient.key)) map.set(recipient.key, recipient);
+    });
+  });
+  return [...map.values()].sort(
+    (a, b) =>
+      RECIPIENT_ROLE_ORDER.indexOf(a.roleLabel) - RECIPIENT_ROLE_ORDER.indexOf(b.roleLabel) ||
+      a.name.localeCompare(b.name, 'ko')
+  );
+}
+
+function getOverdueWeek(daysOverdue: number): OverdueWeekFilter {
+  if (daysOverdue <= 6) return 1;
+  if (daysOverdue <= 13) return 2;
+  if (daysOverdue <= 19) return 3;
+  return 4;
+}
+
+// 앱 기준일 (연체·주간 집계 공통)
+const TODAY = new Date('2026-06-09');
+TODAY.setHours(0, 0, 0, 0);
+const MS_DAY = 86400000;
+
+function parseDay(s: string) {
+  const d = new Date(s.substring(0, 10));
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function inRange(dateStr: string | null | undefined, start: Date, end: Date) {
+  if (!dateStr) return false;
+  const d = parseDay(dateStr);
+  return d >= start && d < end;
+}
+
+function weekBounds(ref: Date) {
+  const start = new Date(ref);
+  start.setDate(ref.getDate() - ((ref.getDay() + 6) % 7));
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 7);
+  const prevStart = new Date(start);
+  prevStart.setDate(start.getDate() - 7);
+  return { thisStart: start, thisEnd: end, prevStart, prevEnd: start };
+}
+
+function WoWBadge({ delta, lowerIsBetter = false }: { delta: number; lowerIsBetter?: boolean }) {
+  if (delta === 0) {
+    return (
+      <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-slate-400">
+        <Minus className="w-3 h-3" /> 전주 대비 0
+      </span>
+    );
+  }
+  const up = delta > 0;
+  const good = lowerIsBetter ? !up : up;
+  const Icon = up ? TrendingUp : TrendingDown;
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold ${good ? 'text-emerald-600' : 'text-rose-600'}`}>
+      <Icon className="w-3 h-3" />
+      {up ? '+' : ''}{delta} 전주
+    </span>
+  );
+}
+
 export default function DashboardView({
   samples,
   rentals,
-  members,
+  members = [],
   onNavigateToRentals,
   onNavigateToSamples,
   showOnlyCharts = false,
@@ -31,75 +175,354 @@ export default function DashboardView({
   const totalSamples = samples.length;
   const availableCount = samples.filter((s) => s.status === '대여가능').length;
   const onLoanCount = samples.filter((s) => s.status === '대여중').length;
-  const overdueCount = rentals.filter((r) => r.status === '연체중').length;
+  const todayStr = TODAY.toISOString().substring(0, 10);
+  const overdueCount = rentals.filter((r) => effectiveRentalStatus(r, todayStr) === '연체중').length;
   const lostCount = samples.filter((s) => s.status === '분실').length;
   const bupyeongCount = samples.filter((s) => s.status === '부평보관').length;
 
   // Overdue lists for alert panel
-  const activeOverdues = rentals.filter((r) => r.status === '연체중');
+  const activeOverdues = rentals.filter((r) => effectiveRentalStatus(r, todayStr) === '연체중');
 
-  // Local states for AI notification panel
-  const [sendingId, setSendingId] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sortDesc, setSortDesc] = useState(true); // 연체일 내림차순 기본
-  const [notifyFilter, setNotifyFilter] = useState<'all' | 'none' | 'sent'>('all');
+  const overdueDeptBreakdown = useMemo(() => {
+    const counts: Record<string, number> = {};
+    activeOverdues.forEach((r) => {
+      const dept = r.borrowerGroup || '미지정';
+      counts[dept] = (counts[dept] || 0) + 1;
+    });
+    const total = activeOverdues.length;
+    if (total === 0) return [];
+    return Object.entries(counts)
+      .map(([dept, count]) => ({
+        dept,
+        count,
+        pct: Math.round((count / total) * 100),
+      }))
+      .sort((a, b) => b.count - a.count);
+  }, [activeOverdues]);
+
+  const overdueByDept = useMemo(() => {
+    const map: Record<string, Rental[]> = {};
+    activeOverdues.forEach((r) => {
+      const dept = r.borrowerGroup || '미지정';
+      if (!map[dept]) map[dept] = [];
+      map[dept].push(r);
+    });
+    return map;
+  }, [activeOverdues]);
 
   // 기준일(시스템 표준일) 대비 연체 일수
   const overdueDaysOf = (r: Rental) => {
     const dueTime = new Date(r.dueDate).getTime();
-    const todayTime = new Date('2026-06-09').getTime();
-    return Math.ceil(Math.abs(todayTime - dueTime) / (1000 * 60 * 60 * 24));
+    return Math.ceil(Math.abs(TODAY.getTime() - dueTime) / MS_DAY);
   };
+
+  const overdueBorrowersOfDept = (dept: string) => {
+    const rentalsInDept = overdueByDept[dept] || [];
+    const byBorrower = new Map<string, { borrowerId: string; name: string; count: number; maxDays: number }>();
+    rentalsInDept.forEach((r) => {
+      const days = overdueDaysOf(r);
+      const existing = byBorrower.get(r.borrowerId);
+      if (existing) {
+        existing.count += 1;
+        existing.maxDays = Math.max(existing.maxDays, days);
+      } else {
+        byBorrower.set(r.borrowerId, { borrowerId: r.borrowerId, name: r.borrowerName, count: 1, maxDays: days });
+      }
+    });
+    return [...byBorrower.values()].sort((a, b) => b.maxDays - a.maxDays);
+  };
+
+  // Local states for AI notification panel
+  const [sendingId, setSendingId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterDept, setFilterDept] = useState('전체');
+  const [overdueWeekFilter, setOverdueWeekFilter] = useState<OverdueWeekFilter>(1);
+  const [managerTask, setManagerTask] = useState<ManagerTask>('overdue');
+  const [selectedOverdueDept, setSelectedOverdueDept] = useState<string | null>(null);
+  const [bulkSending, setBulkSending] = useState(false);
+  const overdueScrollRef = useRef<HTMLDivElement>(null);
+
+  const selectOverdueWeek = (week: OverdueWeekFilter) => {
+    const scrollTop = overdueScrollRef.current?.scrollTop ?? 0;
+    setOverdueWeekFilter(week);
+    requestAnimationFrame(() => {
+      if (overdueScrollRef.current) overdueScrollRef.current.scrollTop = scrollTop;
+    });
+  };
+
+  const overdueDeptOptions = useMemo(
+    () => [...new Set(activeOverdues.map((r) => r.borrowerGroup).filter(Boolean))].sort(),
+    [activeOverdues]
+  );
+
+  const hasListFilters =
+    !!searchQuery.trim() ||
+    filterDept !== '전체';
+
+  const overdueWeekCounts = useMemo(() => {
+    const counts: Record<OverdueWeekFilter, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+    activeOverdues.forEach((r) => {
+      counts[getOverdueWeek(overdueDaysOf(r))] += 1;
+    });
+    return counts;
+  }, [activeOverdues]);
+
+  const dueSoonRentals = useMemo(() => {
+    const { thisEnd } = weekBounds(TODAY);
+    return rentals.filter((r) => {
+      if (r.status === '반납완료') return false;
+      if (!r.dueDate) return false;
+      const due = parseDay(r.dueDate);
+      // 기준일 기준 이번 주 내 반납 예정 (아직 반납일 전·당일)
+      return due >= TODAY && due < thisEnd;
+    });
+  }, [rentals]);
+
+  const daysUntilDue = (r: Rental) => {
+    const due = parseDay(r.dueDate);
+    return Math.ceil((due.getTime() - TODAY.getTime()) / MS_DAY);
+  };
+
+  const formatDueCountdown = (dueDate: string) => {
+    const due = parseDay(dueDate);
+    const daysLeft = Math.ceil((due.getTime() - TODAY.getTime()) / MS_DAY);
+    if (daysLeft <= 0) return 'D-00';
+    if (daysLeft < 10) return `D-0${daysLeft}`;
+    return `D-${daysLeft}`;
+  };
+
+  const managerActions = useMemo(
+    () =>
+      [
+        {
+          id: 'overdue' as const,
+          count: activeOverdues.length,
+          title: `연체 ${activeOverdues.length}건 — 반납 알림 발송 필요`,
+          sub: '에이전트가 단계별 메일 자동 발송',
+          icon: AlertTriangle,
+          cardClass: 'bg-rose-50/35 hover:bg-rose-50/55',
+          activeClass: 'bg-rose-50/60',
+          iconClass: 'text-rose-500',
+        },
+        {
+          id: 'due-soon' as const,
+          count: dueSoonRentals.length,
+          title: `반납 예정 ${dueSoonRentals.length}건 (이번 주)`,
+          sub: '반납일 임박 — 사전 안내 권장',
+          icon: Clock,
+          cardClass: 'bg-amber-50 hover:bg-amber-100/80',
+          activeClass: 'bg-amber-100',
+          iconClass: 'text-amber-600',
+        },
+      ],
+    [activeOverdues.length, dueSoonRentals.length]
+  );
+
+  const taskMeta = {
+    overdue: {
+      title: '연체 알림 발송',
+      desc: '연체 주차별로 확인하고 반납 알림 메일을 발송하세요.',
+      badge: `${overdueWeekCounts[overdueWeekFilter]}건`,
+      badgeClass: 'bg-rose-100 text-rose-700',
+      headerClass: 'border-rose-100/60 bg-gradient-to-r from-rose-50/20 to-transparent',
+      pulseClass: 'bg-rose-600',
+      pingClass: 'bg-rose-400',
+    },
+    'due-soon': {
+      title: '반납 예정 사전 안내',
+      desc: '이번 주 반납 예정 건에 사전 안내 메일을 보내세요.',
+      badge: `${dueSoonRentals.length}건`,
+      badgeClass: 'bg-amber-100 text-amber-800',
+      headerClass: 'border-amber-100/60 bg-gradient-to-r from-amber-50/30 to-transparent',
+      pulseClass: 'bg-amber-500',
+      pingClass: 'bg-amber-400',
+    },
+  } as const;
+
+  const activeTaskMeta = taskMeta[managerTask];
+
+  const matchSearch = (query: string, ...values: (string | undefined)[]) => {
+    if (!query.trim()) return true;
+    const q = query.toLowerCase();
+    return values.some((v) => (v || '').toLowerCase().includes(q));
+  };
+
+  const weekStats = useMemo(() => {
+    const { thisStart, thisEnd, prevStart, prevEnd } = weekBounds(TODAY);
+    const tomorrow = new Date(TODAY.getTime() + MS_DAY);
+
+    const thisWeekRent = rentals.filter((r) => inRange(r.rentDate, thisStart, tomorrow)).length;
+    const lastWeekRent = rentals.filter((r) => inRange(r.rentDate, prevStart, prevEnd)).length;
+    const thisWeekReturn = rentals.filter((r) => inRange(r.returnDate, thisStart, tomorrow)).length;
+    const lastWeekReturn = rentals.filter((r) => inRange(r.returnDate, prevStart, prevEnd)).length;
+    const thisWeekNewOverdue = rentals.filter(
+      (r) => effectiveRentalStatus(r, todayStr) === '연체중' && inRange(r.dueDate, thisStart, tomorrow)
+    ).length;
+    const lastWeekNewOverdue = rentals.filter(
+      (r) => effectiveRentalStatus(r, todayStr) === '연체중' && inRange(r.dueDate, prevStart, prevEnd)
+    ).length;
+    const thisWeekReg = samples.filter((s) => inRange(s.regDate, thisStart, tomorrow)).length;
+    const lastWeekReg = samples.filter((s) => inRange(s.regDate, prevStart, prevEnd)).length;
+
+    const avgOverdue =
+      activeOverdues.length > 0
+        ? activeOverdues.reduce((sum, r) => sum + overdueDaysOf(r), 0) / activeOverdues.length
+        : 0;
+
+    return {
+      thisWeekRent,
+      lastWeekRent,
+      thisWeekReturn,
+      lastWeekReturn,
+      thisWeekNewOverdue,
+      lastWeekNewOverdue,
+      thisWeekReg,
+      lastWeekReg,
+      avgOverdue,
+    };
+  }, [rentals, samples, activeOverdues]);
 
   const handleSendAutomatedEmail = async (rental: Rental) => {
     if (!confirm(`${rental.borrowerName} 님에게 반납 요청 메일을 발송하시겠습니까?`)) return;
-    
     setSendingId(rental.rentalId);
     try {
-      const dueTime = new Date(rental.dueDate).getTime();
-      const todayTime = new Date('2026-06-09').getTime();
-      const daysOverdue = Math.max(1, Math.ceil((todayTime - dueTime) / (1000 * 60 * 60 * 24)));
-      const tone = rental.notifyCount > 0 ? 'warning' : 'gentle';
+      const ok = await sendOverdueNotification(rental, getOverdueWeek(overdueDaysOf(rental)));
+      if (ok) {
+        alert(`${rental.borrowerName} 님에게 반납 요청 메일이 성공적으로 전송되었습니다.`);
+        if (onRefreshData) onRefreshData();
+        else window.location.reload();
+      }
+    } catch (err) {
+      console.error(err);
+      alert('반납 요청 메일 전송 중 통신 오류가 발생했습니다.');
+    } finally {
+      setSendingId(null);
+    }
+  };
 
+  const sendOverdueNotification = async (rental: Rental, week: OverdueWeekFilter): Promise<boolean> => {
+    const daysOverdue = Math.max(1, overdueDaysOf(rental));
+    const tone = emailTypeForWeek(week);
+
+    const draftRes = await fetch('/api/agent/draft-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        borrowerName: rental.borrowerName,
+        borrowerGroup: rental.borrowerGroup,
+        sampleName: rental.sampleName,
+        sampleCode: rental.sampleCode,
+        dueDate: rental.dueDate,
+        daysOverdue,
+        emailType: tone,
+      }),
+    });
+    const draftData = await draftRes.json();
+
+    const sendRes = await fetch('/api/agent/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rentalId: rental.rentalId,
+        subject: draftData.subject || `[반납 촉구 안내] 대여하신 의류 샘플 반납 기한 경과 안내`,
+        content: draftData.content || `안녕하세요, ${rental.borrowerName}님.\n\n대여 중인 의류 샘플의 빠른 반납 부탁드립니다.`,
+      }),
+    });
+    const sendData = await sendRes.json();
+
+    if (!sendData.success) {
+      alert(`발송 실패 (${rental.borrowerName}): ${sendData.message}`);
+      return false;
+    }
+    return true;
+  };
+
+  const handleBulkSendOverdueEmails = async () => {
+    if (filteredOverdues.length === 0) return;
+
+    const rule = OVERDUE_WEEK_RULES[overdueWeekFilter];
+    if (
+      !confirm(
+        `${filteredOverdues.length}건 연체 알림을 일괄 발송합니다.\n\n` +
+          `· ${overdueWeekFilter}주차 · ${rule.summary}\n` +
+          `· 발송 예정 ${overdueNotifyRecipients.length}명`
+      )
+    ) {
+      return;
+    }
+
+    setBulkSending(true);
+    let success = 0;
+    let fail = 0;
+
+    for (const rental of filteredOverdues) {
+      setSendingId(rental.rentalId);
+      try {
+        const ok = await sendOverdueNotification(rental, overdueWeekFilter);
+        if (ok) success += 1;
+        else fail += 1;
+      } catch (err) {
+        console.error(err);
+        fail += 1;
+      }
+    }
+
+    setSendingId(null);
+    setBulkSending(false);
+
+    if (fail === 0) {
+      alert(`${success}건 연체 알림 메일을 일괄 발송했습니다.`);
+    } else {
+      alert(`발송 완료 ${success}건 · 실패 ${fail}건`);
+    }
+
+    if (onRefreshData) onRefreshData();
+    else window.location.reload();
+  };
+
+  const handleSendPreNoticeEmail = async (rental: Rental) => {
+    if (!confirm(`${rental.borrowerName} 님에게 반납 예정 사전 안내 메일을 발송하시겠습니까?`)) return;
+
+    setSendingId(rental.rentalId);
+    try {
+      const daysLeft = Math.max(0, daysUntilDue(rental));
       const draftRes = await fetch('/api/agent/draft-email', {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           borrowerName: rental.borrowerName,
           borrowerGroup: rental.borrowerGroup,
           sampleName: rental.sampleName,
           sampleCode: rental.sampleCode,
           dueDate: rental.dueDate,
-          daysOverdue,
-          emailType: tone
-        })
+          daysOverdue: 0,
+          emailType: 'gentle',
+          daysUntilDue: daysLeft,
+        }),
       });
       const draftData = await draftRes.json();
-      
+
       const sendRes = await fetch('/api/agent/send-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           rentalId: rental.rentalId,
-          subject: draftData.subject || `[반납 촉구 안내] 대여하신 의류 샘플 반납 기한 경과 안내`,
-          content: draftData.content || `안녕하세요, ${rental.borrowerName}님.\n\n대여 중인 의류 샘플의 빠른 반납 부탁드립니다.`
-        })
+          subject: draftData.subject || `[반납 안내] 대여하신 의류 샘플 반납 예정일 안내`,
+          content: draftData.content || `안녕하세요, ${rental.borrowerName}님.\n\n대여 중인 의류 샘플의 반납 예정일을 안내드립니다.`,
+        }),
       });
       const sendData = await sendRes.json();
-      
+
       if (sendData.success) {
-        alert(`${rental.borrowerName} 님에게 반납 요청 메일이 성공적으로 전송되었습니다.`);
-        if (onRefreshData) {
-          onRefreshData();
-        } else {
-          window.location.reload();
-        }
+        alert(`${rental.borrowerName} 님에게 사전 안내 메일이 전송되었습니다.`);
+        if (onRefreshData) onRefreshData();
+        else window.location.reload();
       } else {
         alert('발송 실패: ' + sendData.message);
       }
     } catch (err) {
       console.error(err);
-      alert('반납 요청 메일 전송 중 통신 오류가 발생했습니다.');
+      alert('사전 안내 메일 전송 중 통신 오류가 발생했습니다.');
     } finally {
       setSendingId(null);
     }
@@ -143,22 +566,44 @@ export default function DashboardView({
 
   const filteredOverdues = activeOverdues
     .filter((overdue) => {
-      // 발송 상태 필터
-      if (notifyFilter === 'none' && overdue.notifyCount > 0) return false;
-      if (notifyFilter === 'sent' && overdue.notifyCount === 0) return false;
-      // 검색어 필터
-      if (!searchQuery) return true;
-      const query = searchQuery.toLowerCase();
-      return (
-        overdue.sampleCode.toLowerCase().includes(query) ||
-        overdue.sampleName.toLowerCase().includes(query) ||
-        overdue.borrowerName.toLowerCase().includes(query) ||
-        overdue.borrowerGroup.toLowerCase().includes(query)
+      if (getOverdueWeek(overdueDaysOf(overdue)) !== overdueWeekFilter) return false;
+      if (filterDept !== '전체' && overdue.borrowerGroup !== filterDept) return false;
+      return matchSearch(
+        searchQuery,
+        overdue.sampleBrand,
+        overdue.borrowerGroup,
+        overdue.sampleCode,
+        overdue.borrowerName,
+        overdue.sampleName
       );
     })
-    .sort((a, b) =>
-      sortDesc ? overdueDaysOf(b) - overdueDaysOf(a) : overdueDaysOf(a) - overdueDaysOf(b)
-    );
+    .sort((a, b) => overdueDaysOf(b) - overdueDaysOf(a));
+
+  const overdueNotifyRecipients = useMemo(
+    () => aggregateNotifyRecipients(filteredOverdues, overdueWeekFilter, members),
+    [filteredOverdues, overdueWeekFilter, members]
+  );
+
+  const filteredDueSoon = dueSoonRentals
+    .filter((rental) => {
+      if (filterDept !== '전체' && rental.borrowerGroup !== filterDept) return false;
+      return matchSearch(
+        searchQuery,
+        rental.sampleBrand,
+        rental.borrowerGroup,
+        rental.sampleCode,
+        rental.borrowerName,
+        rental.sampleName
+      );
+    })
+    .sort((a, b) => daysUntilDue(a) - daysUntilDue(b));
+
+  const taskListCount =
+    managerTask === 'overdue'
+      ? filteredOverdues.length
+      : hasListFilters
+        ? filteredDueSoon.length
+        : dueSoonRentals.length;
 
   const handleReturnAction = (rentalId: string) => {
     if (!confirm('해당 샘플을 즉시 반납 완료 처리하시겠습니까?')) return;
@@ -315,7 +760,7 @@ export default function DashboardView({
                 <div className="text-sm font-bold text-slate-800">{onLoanCount}개</div>
               </div>
               <div className="p-2 bg-rose-50 rounded-lg border border-rose-100">
-                <div className="text-[10px] font-semibold text-rose-700">연체중</div>
+                <div className="text-[10px] font-semibold text-rose-700">연체</div>
                 <div className="text-sm font-bold text-rose-800">{overdueCount}개</div>
               </div>
             </div>
@@ -359,132 +804,247 @@ export default function DashboardView({
     <div className="space-y-6" id="dashboard-container">
       {/* Numerical Quick KPI Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-4" id="kpi-grid">
-        {[
-          { id: 'kpi-all', label: '전체 샘플', val: totalSamples, icon: Package, color: 'text-slate-600 bg-slate-100', link: 'samples' },
-          { id: 'kpi-avail', label: '대여 가능', val: availableCount, icon: UserCheck, color: 'text-emerald-600 bg-emerald-50', link: 'samples' },
-          { id: 'kpi-loan', label: '대여중', val: onLoanCount, icon: RefreshCw, color: 'text-blue-600 bg-blue-50', link: 'rentals' },
-          { id: 'kpi-overdue', label: '연체중', val: overdueCount, icon: AlertTriangle, color: 'text-rose-600 bg-rose-50 border border-rose-100', highlight: true, link: 'rentals' },
-          { id: 'kpi-bupyeong', label: '부평보관', val: bupyeongCount, icon: Building, color: 'text-amber-600 bg-amber-50', link: 'samples' },
-          { id: 'kpi-lost', label: '분실 상태', val: lostCount, icon: ThumbsDown, color: 'text-slate-500 bg-slate-150', link: 'samples' },
-        ].map((kpi, idx) => {
+        {([
+          {
+            id: 'kpi-all', label: '전체 샘플', val: totalSamples, unit: '개',
+            icon: Package, color: 'text-slate-600 bg-slate-100', link: 'samples' as const,
+            wow: weekStats.thisWeekReg - weekStats.lastWeekReg,
+            sub: weekStats.thisWeekReg > 0 ? `이번 주 신규 ${weekStats.thisWeekReg}건` : undefined,
+          },
+          {
+            id: 'kpi-avail', label: '대여 가능', val: availableCount, unit: '개',
+            icon: UserCheck, color: 'text-emerald-600 bg-emerald-50', link: 'samples' as const,
+            sub: totalSamples > 0 ? `가용률 ${Math.round((availableCount / totalSamples) * 100)}%` : undefined,
+          },
+          {
+            id: 'kpi-loan', label: '대여중', val: onLoanCount, unit: '개',
+            icon: RefreshCw, color: 'text-blue-600 bg-blue-50', link: 'rentals' as const,
+            wow: weekStats.thisWeekRent - weekStats.lastWeekRent,
+            sub: `이번 주 대여 ${weekStats.thisWeekRent}건`,
+          },
+          {
+            id: 'kpi-overdue', label: '연체', val: overdueCount, unit: '건',
+            icon: AlertTriangle, color: 'text-rose-600 bg-rose-50', link: 'rentals' as const,
+            highlight: true, lowerIsBetter: true,
+            wow: weekStats.thisWeekNewOverdue - weekStats.lastWeekNewOverdue,
+            sub: `평균 ${weekStats.avgOverdue.toFixed(1)}일 · 목표 0건`,
+          },
+          {
+            id: 'kpi-return', label: '이번 주 반납', val: weekStats.thisWeekReturn, unit: '건',
+            icon: CheckCircle2, color: 'text-indigo-600 bg-indigo-50', link: 'rentals' as const,
+            wow: weekStats.thisWeekReturn - weekStats.lastWeekReturn,
+            sub: `전주 ${weekStats.lastWeekReturn}건`,
+          },
+          {
+            id: 'kpi-lost', label: '분실·부평', val: lostCount + bupyeongCount, unit: '건',
+            icon: ThumbsDown, color: 'text-slate-500 bg-slate-100', link: 'samples' as const,
+            sub: `분실 ${lostCount} · 부평 ${bupyeongCount}`,
+          },
+        ]).map((kpi) => {
           const Icon = kpi.icon;
           return (
-            <motion.div
+            <div
               key={kpi.id}
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: idx * 0.05 }}
-              className={`p-4 rounded-2xl bg-white border border-slate-100 shadow-xs flex flex-col justify-between h-28 cursor-pointer hover:shadow-md transition-all ${
+              className={`p-4 rounded-2xl bg-white border border-slate-100 shadow-xs flex flex-col justify-between min-h-[7.5rem] cursor-pointer hover:shadow-md transition-all ${
                 kpi.highlight ? 'ring-2 ring-rose-500/15' : ''
               }`}
               onClick={kpi.link === 'samples' ? onNavigateToSamples : onNavigateToRentals}
               id={kpi.id}
             >
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-medium text-slate-500">{kpi.label}</span>
-                <div className={`p-2 rounded-lg ${kpi.color}`}>
+              <div className="flex justify-between items-start gap-2">
+                <div className="min-w-0">
+                  <span className="text-xs font-medium text-slate-500 block">{kpi.label}</span>
+                  {kpi.sub && (
+                    <span className="text-[10px] text-slate-400 font-medium truncate block mt-0.5">{kpi.sub}</span>
+                  )}
+                </div>
+                <div className={`p-2 rounded-lg shrink-0 ${kpi.color}`}>
                   <Icon className="w-4 h-4" />
                 </div>
               </div>
-              <div className="mt-2 flex items-baseline gap-1">
-                <span className="text-2xl font-bold tracking-tight text-slate-800">{kpi.val}</span>
-                <span className="text-xs text-slate-400">개</span>
+              <div className="mt-2 flex items-end justify-between gap-2">
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-bold tracking-tight text-slate-800">{kpi.val}</span>
+                  <span className="text-xs text-slate-400">{kpi.unit}</span>
+                </div>
+                {kpi.wow !== undefined && (
+                  <WoWBadge delta={kpi.wow} lowerIsBetter={kpi.lowerIsBetter} />
+                )}
               </div>
-            </motion.div>
+            </div>
           );
         })}
       </div>
 
       {/* Main Overdue Workspace & Notification Center Centerpiece */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in" id="dashboard-main-workspace-row">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" id="dashboard-main-workspace-row">
         
         {/* Left Side: Overdue list control board (lg:col-span-2) */}
         <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between overflow-hidden lg:h-[600px]" id="dashboard-overdue-list-panel">
           
           {/* Header Area */}
-          <div className="p-5 border-b border-rose-100/60 bg-gradient-to-r from-rose-50/20 to-transparent space-y-3">
-            <div className="flex flex-col sm:flex-row gap-4 justify-between sm:items-center">
-              <div className="flex items-center gap-3">
-                <span className="flex h-2.5 w-2.5 relative">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-600"></span>
+          <div className={`p-5 border-b space-y-3 ${activeTaskMeta.headerClass}`}>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="flex h-2.5 w-2.5 relative shrink-0">
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${activeTaskMeta.pingClass}`}></span>
+                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${activeTaskMeta.pulseClass}`}></span>
                 </span>
-                <div>
-                  <h3 className="text-sm font-extrabold text-slate-800 tracking-tight flex items-center gap-2">
-                    미반납·연체 샘플 관리
-                    <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono">
-                      {activeOverdues.length}명 대기중
+                <div className="min-w-0">
+                  <h3 className="text-sm font-extrabold text-slate-800 tracking-tight flex items-center gap-2 flex-wrap">
+                    {activeTaskMeta.title}
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full font-mono ${activeTaskMeta.badgeClass}`}>
+                      {activeTaskMeta.badge}
                     </span>
                   </h3>
-                  <p className="text-[11px] text-slate-400 font-medium">연체 일수를 확인하고 반납 요청 메일을 보낼 수 있어요.</p>
+                  <p className="text-[11px] text-slate-400 font-medium">{activeTaskMeta.desc}</p>
                 </div>
               </div>
 
-              {/* Quick search input */}
-              <div className="relative w-full sm:w-60">
-                <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-slate-400" />
+              <span className="shrink-0 self-center text-[11px] text-slate-400 font-extrabold font-mono uppercase tracking-wide whitespace-nowrap">
+                상품 수: {taskListCount.toLocaleString()}개
+              </span>
+            </div>
+
+            {/* Filters & Sort */}
+            <div className="flex items-center gap-x-2 gap-y-2 flex-nowrap min-w-0">
+              <span className="text-[10px] font-bold text-slate-400 shrink-0">부서</span>
+              <div className="relative shrink-0">
+                <select
+                  value={filterDept}
+                  onChange={(e) => setFilterDept(e.target.value)}
+                  className="appearance-none h-7 bg-white border border-slate-200 pl-2.5 pr-7 rounded-lg text-[11px] font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-rose-500/30 cursor-pointer"
+                >
+                  <option value="전체">전체</option>
+                  {overdueDeptOptions.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400 pointer-events-none" />
+              </div>
+
+              {managerTask === 'overdue' && (
+                <>
+                  <span className="mx-0.5 h-3.5 w-px bg-slate-200 shrink-0" />
+                  <span className="text-[10px] font-bold text-slate-400 shrink-0">연체 기준</span>
+                  {([1, 2, 3, 4] as const).map((week) => (
+                    <button
+                      key={week}
+                      type="button"
+                      onClick={() => selectOverdueWeek(week)}
+                      className={`h-7 px-2.5 rounded-full text-[11px] font-bold transition-colors cursor-pointer inline-flex items-center gap-1 ${
+                        overdueWeekFilter === week
+                          ? 'bg-slate-800 text-white'
+                          : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      {week}주
+                    </button>
+                  ))}
+                </>
+              )}
+
+              <div className="flex-1 min-w-2" aria-hidden="true" />
+
+              <div className="relative h-7 w-[17rem] shrink-0 flex items-center">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="연체자명, 부서, 상품코드 검색..."
-                  className="w-full pl-8 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-rose-500/30 font-sans"
+                  placeholder="업체명, 부서, 상품코드, 대여자명 검색..."
+                  className={`box-border h-7 w-full pl-8 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-medium focus:outline-none focus:ring-1 focus:ring-rose-500/30 font-sans placeholder:text-slate-400 ${searchQuery ? 'pr-8' : 'pr-3'}`}
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* Filters & Sort */}
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-bold text-slate-400">발송 상태</span>
-              {([
-                { id: 'all', label: '전체' },
-                { id: 'none', label: '미발송' },
-                { id: 'sent', label: '발송완료' },
-              ] as const).map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => setNotifyFilter(f.id)}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold border transition-colors cursor-pointer ${
-                    notifyFilter === f.id
-                      ? 'bg-rose-600 text-white border-rose-600'
-                      : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
+            {managerTask === 'overdue' && (
+              <div className="rounded-lg border border-rose-100/80 bg-white/70 px-3 py-2.5 space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-extrabold text-slate-700">
+                      연체 {overdueWeekFilter}주 · {OVERDUE_WEEK_RULES[overdueWeekFilter].summary}
+                    </p>
+                    <p className="text-[10px] text-slate-500 font-medium mt-0.5">
+                      {filteredOverdues.length}건 · 발송 예정 <span className="font-bold text-rose-600">{overdueNotifyRecipients.length}명</span>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleBulkSendOverdueEmails}
+                    disabled={bulkSending || filteredOverdues.length === 0}
+                    className="shrink-0 h-8 px-3 rounded-lg bg-rose-600 text-white text-[11px] font-extrabold flex items-center gap-1.5 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                  >
+                    {bulkSending ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        발송 중...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-3.5 h-3.5" />
+                        일괄 발송
+                      </>
+                    )}
+                  </button>
+                </div>
 
-              <span className="mx-1 h-3.5 w-px bg-slate-200" />
-
-              <button
-                onClick={() => setSortDesc((p) => !p)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
-                title="연체일 정렬 전환"
-              >
-                {sortDesc ? <ArrowDownWideNarrow className="w-3.5 h-3.5" /> : <ArrowUpNarrowWide className="w-3.5 h-3.5" />}
-                연체일 {sortDesc ? '내림차순' : '오름차순'}
-              </button>
-
-              <span className="ml-auto text-[11px] font-mono text-slate-400">{filteredOverdues.length}건</span>
-            </div>
+                {overdueNotifyRecipients.length > 0 ? (
+                  <div className="space-y-1 max-h-24 overflow-y-auto">
+                    {overdueNotifyRecipients.map((recipient) => (
+                      <div key={recipient.key} className="flex items-center justify-between gap-2 text-[10px]">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="shrink-0 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">
+                            {recipient.roleLabel}
+                          </span>
+                          <span className="font-bold text-slate-700 truncate">{recipient.name}</span>
+                        </div>
+                        {recipient.email && (
+                          <span className="text-slate-400 truncate shrink-0 max-w-[9rem] font-mono">{recipient.email}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-slate-400 font-medium">현재 필터에 해당하는 연체 건이 없습니다.</p>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* List Overdue container */}
-          <div className="p-5 space-y-4 flex-1 overflow-y-auto" id="dashboard-overdues-scroll-area font-sans">
-            {filteredOverdues.length === 0 ? (
+          {/* Task list container */}
+          <div ref={overdueScrollRef} className="p-5 space-y-4 flex-1 overflow-y-auto" id="dashboard-overdues-scroll-area font-sans">
+            {managerTask === 'overdue' && filteredOverdues.length === 0 && (
               <div className="py-24 text-center text-xs text-slate-400 flex flex-col items-center justify-center gap-2">
                 <div className="p-4 bg-slate-50 rounded-full text-slate-400">
                   <CheckCircle2 className="w-8 h-8 text-emerald-500 animate-bounce" />
                 </div>
-                <span className="font-bold text-slate-600 block mt-2 font-sans">반납 대기 또는 연체 자산이 존재하지 않습니다.</span>
-                <span className="text-[11px] font-sans">안심 정보: 워크스페이스 내 모든 샘플이 정상 운용 중입니다.</span>
+                <span className="font-bold text-slate-600 block mt-2 font-sans">{overdueWeekFilter}주차 연체 건이 없습니다.</span>
+                <span className="text-[11px] font-sans">다른 주차를 선택해 보세요.</span>
               </div>
-            ) : (
-              filteredOverdues.map((overdue, index) => {
-                const dueDt = new Date(overdue.dueDate);
-                const today = new Date('2026-06-09'); // system date standard
-                const diffTime = Math.abs(today.getTime() - dueDt.getTime());
-                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            )}
+
+            {managerTask === 'due-soon' && filteredDueSoon.length === 0 && (
+              <div className="py-24 text-center text-xs text-slate-400 flex flex-col items-center justify-center gap-2">
+                <div className="p-4 bg-slate-50 rounded-full text-slate-400">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-500 animate-bounce" />
+                </div>
+                <span className="font-bold text-slate-600 block mt-2 font-sans">이번 주 반납 예정 건이 없습니다.</span>
+                <span className="text-[11px] font-sans">사전 안내가 필요한 대여 건이 없습니다.</span>
+              </div>
+            )}
+
+            {managerTask === 'overdue' && filteredOverdues.map((overdue) => {
+                const diffDays = overdueDaysOf(overdue);
                 const hasNotifiedBefore = overdue.notifyCount > 0;
                 
                 // Find matching sample to get details & image
@@ -493,8 +1053,8 @@ export default function DashboardView({
                 return (
                   <div
                     key={overdue.rentalId}
-                    className="p-4 rounded-xl border transition-all flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white border-slate-200/80 hover:border-slate-300 hover:shadow-2xs"
-                    id={`overdue-card-${index}`}
+                    className="p-4 rounded-xl border flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white border-slate-200/80 hover:border-slate-300"
+                    id={`overdue-card-${overdue.rentalId}`}
                   >
                     {/* Left side: Thumbnail image & essential details (satisfies image requirement) */}
                     <div className="flex items-center gap-4 flex-1 w-full min-w-0">
@@ -551,12 +1111,12 @@ export default function DashboardView({
                         <button
                           onClick={() => handleSendAutomatedEmail(overdue)}
                           disabled={sendingId === overdue.rentalId}
-                          className={`py-1.5 px-3 rounded-lg shadow-sm font-bold text-[11px] flex items-center gap-1 transition-all active:scale-95 cursor-pointer ${
+                          className={`py-1.5 px-3 rounded-lg shadow-sm font-bold text-[11px] flex items-center gap-1 transition-colors active:scale-[0.98] cursor-pointer ${
                             hasNotifiedBefore
-                              ? 'bg-indigo-600 hover:bg-indigo-700 text-white animate-pulse'
+                              ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
                               : 'bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100'
                           } disabled:opacity-50`}
-                          id={hasNotifiedBefore ? `btn-overdue-action-resend-${index}` : `btn-overdue-action-first-${index}`}
+                          id={hasNotifiedBefore ? `btn-overdue-action-resend-${overdue.rentalId}` : `btn-overdue-action-first-${overdue.rentalId}`}
                         >
                           {sendingId === overdue.rentalId ? (
                             <>
@@ -591,8 +1151,74 @@ export default function DashboardView({
                     </div>
                   </div>
                 );
-              })
-            )}
+              })}
+
+            {managerTask === 'due-soon' && filteredDueSoon.map((rental) => {
+              const sample = samples.find((s) => s.code === rental.sampleCode);
+              const countdown = formatDueCountdown(rental.dueDate);
+
+              return (
+                <div
+                  key={rental.rentalId}
+                  className="p-4 rounded-xl border flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white border-slate-200/80 hover:border-slate-300"
+                  id={`due-soon-card-${rental.rentalId}`}
+                >
+                  <div className="flex items-center gap-4 flex-1 w-full min-w-0">
+                    <div className="w-16 h-16 rounded-xl bg-slate-50 border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center relative shadow-xs">
+                      {sample?.imgFront ? (
+                        <img src={sample.imgFront} alt={rental.sampleName} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-amber-50 to-slate-100 text-slate-400">
+                          <Package className="w-6 h-6 text-amber-500" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-1 flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-extrabold text-indigo-700 bg-indigo-50 border border-indigo-100 py-0.5 px-2 rounded font-mono uppercase tracking-tight">
+                          {rental.sampleCode}
+                        </span>
+                      </div>
+                      <h4 className="text-[12.5px] font-extrabold text-slate-800 line-clamp-1 tracking-tight" title={rental.sampleName}>
+                        {rental.sampleName}
+                      </h4>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 font-sans">
+                        <div className="flex items-center gap-1">
+                          <User className="w-3.5 h-3.5 text-slate-400" />
+                          <strong className="text-slate-700">{rental.borrowerName}</strong>
+                          <span className="text-slate-400">({rental.borrowerGroup})</span>
+                        </div>
+                        <span className="text-slate-300">•</span>
+                        <span className="text-amber-700 font-extrabold flex items-center gap-0.5 bg-amber-50 px-2 py-0.5 rounded text-[11px]">
+                          <Clock className="w-3 h-3 block" />
+                          반납예정 {countdown}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 w-full md:w-auto justify-end shrink-0 border-t border-slate-50 md:border-0 pt-3 md:pt-0">
+                    <button
+                      onClick={() => handleSendPreNoticeEmail(rental)}
+                      disabled={sendingId === rental.rentalId}
+                      className="py-1.5 px-3 rounded-lg shadow-sm font-bold text-[11px] flex items-center gap-1 transition-colors active:scale-[0.98] cursor-pointer bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+                    >
+                      {sendingId === rental.rentalId ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          전송 중...
+                        </>
+                      ) : (
+                        <>
+                          <Mail className="w-3.5 h-3.5" />
+                          사전 안내 발송
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
           </div>
         </div>
 
@@ -600,90 +1226,114 @@ export default function DashboardView({
         <div id="dashboard-active-desk-panel" className="lg:h-[0px] flex-none lg:h-[600px] flex flex-col">
           
           {/* Overdue Asset Risk Diagnostics & Intelligence Dashboard */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col h-full justify-between overflow-hidden animate-fade-in" id="homespace-diagnostics-panel">
-            <div className="flex justify-between items-center border-b border-slate-150 pb-3">
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col h-full overflow-hidden gap-3" id="homespace-diagnostics-panel">
+            <div className="flex justify-between items-center pb-1 shrink-0">
               <div className="flex items-center gap-2">
-                <AlertTriangle className="w-4.5 h-4.5 text-rose-500 block shrink-0 animate-pulse" />
-                <h3 className="text-sm font-extrabold text-slate-800">연체 현황판</h3>
+                <Sparkles className="w-4.5 h-4.5 text-indigo-500 block shrink-0" />
+                <h3 className="text-sm font-extrabold text-slate-800">관리자 업무</h3>
               </div>
-              <span className="text-[10px] bg-rose-50 text-rose-700 px-2 py-0.5 rounded-full font-extrabold font-mono uppercase">
-                Risk Analytics
+              <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-extrabold font-mono uppercase">
+                Manager Actions
               </span>
             </div>
 
-            {/* Statistical KPI Grid inside sidebar */}
-            <div className="grid grid-cols-2 gap-3" id="diagnostics-mini-facts">
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 space-y-0.5">
-                <span className="text-[9.5px] font-bold text-slate-400 block font-sans">연체 자산 정체 총액</span>
-                <p className="text-sm font-extrabold text-slate-800 font-mono">
-                  {activeOverdues.reduce((sum, r) => {
-                    const s = samples.find(item => item.code === r.sampleCode);
-                    return sum + (s?.price || 0);
-                  }, 0).toLocaleString()}원
-                </p>
-              </div>
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 space-y-0.5">
-                <span className="text-[9.5px] font-bold text-slate-400 block font-sans">최대 연체 기한</span>
-                <p className="text-sm font-extrabold text-rose-600 font-mono">
-                  {activeOverdues.reduce((max, r) => {
-                    const dueDt = new Date(r.dueDate);
-                    const today = new Date('2026-06-09');
-                    const dDiff = Math.ceil(Math.abs(today.getTime() - dueDt.getTime()) / (1000 * 60 * 60 * 24));
-                    return dDiff > max ? dDiff : max;
-                  }, 0)}일째 경과
-                </p>
-              </div>
-            </div>
-
-            {/* Bottleneck department indicator list */}
-            <div className="space-y-2.5 pt-1">
-              <h4 className="text-[11px] font-extrabold text-slate-700 flex items-center justify-between">
-                <span>부서별 샘플 정체 비중</span>
-                <span className="text-[9.5px] text-slate-400 font-medium">연체 기안 점유율</span>
-              </h4>
-              
-              <div className="space-y-2 max-h-48 overflow-y-auto pr-1" id="dept-bottleneck-bars">
-                {Object.entries(
-                  activeOverdues.reduce((acc: { [key: string]: number }, r) => {
-                    acc[r.borrowerGroup] = (acc[r.borrowerGroup] || 0) + 1;
-                    return acc;
-                  }, {})
-                ).sort((a,b) => b[1] - a[1]).map(([dept, count], idx) => {
-                  const percent = Math.round((count / activeOverdues.length) * 100);
-                  return (
-                    <div key={dept} className="space-y-1">
-                      <div className="flex justify-between items-center text-[10.5px]">
-                        <span className="font-extrabold text-slate-700">{dept}</span>
-                        <span className="font-mono text-slate-500 font-bold">{count}건 ({percent}%)</span>
-                      </div>
-                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full rounded-full transition-all ${
-                            idx === 0 ? 'bg-rose-500' : 'bg-indigo-500'
-                          }`}
-                          style={{ width: `${percent}%` }}
-                        />
-                      </div>
+            <div className="space-y-2.5 shrink-0" id="manager-action-cards">
+              {managerActions.map((action) => {
+                const Icon = action.icon;
+                const isActive = managerTask === action.id;
+                return (
+                  <button
+                    key={action.id}
+                    type="button"
+                    onClick={() => {
+                      setManagerTask(action.id);
+                      if (overdueScrollRef.current) overdueScrollRef.current.scrollTop = 0;
+                    }}
+                    className={`w-full text-left p-3.5 rounded-xl transition-all cursor-pointer flex items-center gap-3 ${
+                      isActive ? action.activeClass : action.cardClass
+                    }`}
+                    id={`manager-action-${action.id}`}
+                  >
+                    <div className={`p-2 rounded-lg shrink-0 bg-white/80 ${action.iconClass}`}>
+                      <Icon className="w-4 h-4" />
                     </div>
-                  );
-                })}
-              </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px] font-extrabold leading-snug text-slate-800">{action.title}</p>
+                      <p className="text-[10px] font-medium mt-0.5 text-slate-500">{action.sub}</p>
+                    </div>
+                    <ChevronRight className={`w-4 h-4 shrink-0 ${isActive ? 'text-slate-600' : 'text-slate-300'}`} />
+                  </button>
+                );
+              })}
             </div>
 
-            {/* compliance scoreboard and actions warnings */}
-            <div className="bg-indigo-50/40 p-3.5 rounded-xl border border-indigo-150/50 text-xs text-slate-600 space-y-1.5 leading-relaxed font-sans" id="diagnostics-compliance-rules">
-              <h4 className="font-extrabold text-slate-800 flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-indigo-600 block shrink-0" />
-                샘플 반납 요청 알림:
-              </h4>
-              <ul className="text-[11px] text-slate-500 pl-4 list-disc space-y-1 font-medium">
-                <li>
-                  현재 대여 수명 연체중 20만 원 이상의 <b className="text-slate-700">고가 바잉 의류 샘플</b>이 집중 정체 구역에 속해 있습니다.
-                </li>
-                <li>
-                  장기 연체 누적 비중이 높은 부서 기안자에 대해 좌측 표의 <b className="text-indigo-700">"메일 재발송"</b> 또는 <b className="text-rose-600">"메일 발송"</b> 버튼을 클릭하여 반납 요청 메일을 발송해 보세요.
-                </li>
-              </ul>
+            <div className="shrink-0 mt-4 space-y-3" id="overdue-status-panel">
+              <div className="flex items-center gap-2 min-w-0">
+                <TrendingUp className="w-4.5 h-4.5 text-rose-500 block shrink-0" />
+                <h3 className="text-sm font-extrabold text-slate-800">연체 현황</h3>
+              </div>
+
+              <div className="rounded-xl border border-slate-100 bg-slate-50/40 p-3 space-y-2.5" id="overdue-dept-breakdown">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-extrabold text-slate-700">부서별 연체 비중</span>
+                  <span className="text-[9px] font-bold text-slate-400 shrink-0">연체 건수</span>
+                </div>
+
+                {overdueDeptBreakdown.length === 0 ? (
+                  <p className="text-[11px] text-slate-400 text-center py-4 font-medium">연체 건이 없습니다.</p>
+                ) : (
+                  <div className="space-y-0">
+                    {overdueDeptBreakdown.map((row, idx) => {
+                      const isExpanded = selectedOverdueDept === row.dept;
+                      const borrowers = isExpanded ? overdueBorrowersOfDept(row.dept) : [];
+
+                      return (
+                      <div
+                        key={row.dept}
+                        className={`py-2 ${idx > 0 ? 'border-t border-slate-100/80' : ''}`}
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <div className="flex items-center gap-0.5 min-w-0">
+                            <span className="text-[11px] font-bold text-slate-700 truncate">{row.dept}</span>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedOverdueDept(isExpanded ? null : row.dept)}
+                              className="p-0.5 rounded hover:bg-slate-200/60 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer shrink-0"
+                              aria-expanded={isExpanded}
+                              aria-label={`${row.dept} 연체자 보기`}
+                            >
+                              <ChevronRight className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                            </button>
+                          </div>
+                          <span className="text-[11px] font-mono font-bold text-slate-500 shrink-0">
+                            {row.count}건 ({row.pct}%)
+                          </span>
+                        </div>
+                        <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${idx === 0 ? 'bg-rose-500' : 'bg-blue-500'}`}
+                            style={{ width: `${Math.max(row.pct, 8)}%` }}
+                          />
+                        </div>
+
+                        {isExpanded && (
+                          <div className="mt-1.5 space-y-1 pl-0.5">
+                            {borrowers.map((person) => (
+                              <div key={person.borrowerId} className="flex items-center justify-between gap-2 text-[10px]">
+                                <span className="font-medium text-slate-600 truncate">{person.name}</span>
+                                <span className="text-rose-600 font-bold shrink-0 font-mono">
+                                  {person.maxDays}일째 연체 · {person.count}건
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
 
           </div>

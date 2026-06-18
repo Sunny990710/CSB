@@ -3,10 +3,10 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, Edit2, Trash2, Search, FileSpreadsheet, Image as ImageIcon, 
-  Upload, X, Check, RefreshCw, AlertCircle, FileText, CheckCircle, ChevronDown, Eye,
+  Upload, X, Check, RefreshCw, AlertCircle, FileText, CheckCircle, ChevronDown, ChevronRight, Eye,
   LayoutGrid, List, HelpCircle, Camera, Sparkles, Download, Share2, Tag
 } from 'lucide-react';
-import { Sample, SampleStatus, Rental, Category, AiTagGroups, AiTagCategory } from '../types';
+import { Sample, SampleStatus, Rental, Category, AiTagGroups, AiTagCategory, sampleStatusLabel } from '../types';
 import { DateRangeCalendar } from './DateRangeCalendar';
 
 // AI 생성 태그 카테고리 정의 (표시 순서, 한글 라벨, 입력 안내 문구)
@@ -18,6 +18,76 @@ const AI_TAG_CATEGORIES: { key: AiTagCategory; label: string; placeholder: strin
   { key: 'style', label: '스타일', placeholder: '분위기나 스타일을 입력하세요' },
   { key: 'season', label: '활용 시즌', placeholder: '활용하기 좋은 시즌을 입력하세요' },
 ];
+
+const AI_NEW_BULK_STEPS = [
+  '구글 스프레드시트 연동',
+  '신규 샘플 이미지 업로드',
+  '이미지 속성 매칭',
+  '일괄 등록',
+] as const;
+
+function resolveAiNewBulkStep(
+  meta: Record<string, unknown>,
+  drafts: { isAnalyzed: boolean }[]
+): number {
+  if (Object.keys(meta).length === 0) return 1;
+  if (drafts.length === 0) return 2;
+  if (drafts.some((d) => !d.isAnalyzed)) return 3;
+  return 4;
+}
+
+const MAPPING_BULK_STEPS = [
+  '샘플 촬영 사진 업로드',
+  '의류 코드 매칭',
+  '일괄 교체',
+] as const;
+
+function resolveMappingBulkStep(files: { matchedCode: string | null }[]): number {
+  if (files.length === 0) return 1;
+  if (files.some((f) => !f.matchedCode)) return 2;
+  return 3;
+}
+
+function BulkProcessStepper({
+  steps,
+  currentStep,
+  id,
+}: {
+  steps: readonly string[];
+  currentStep: number;
+  id?: string;
+}) {
+  return (
+    <div
+      className="flex flex-wrap items-center gap-2 bg-white p-4 rounded-xl border border-slate-100 shadow-xs"
+      id={id}
+    >
+      {steps.map((label, idx) => {
+        const step = idx + 1;
+        const isPending = step > currentStep;
+        return (
+          <React.Fragment key={label}>
+            {idx > 0 && <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" aria-hidden="true" />}
+            <div
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-colors ${
+                isPending ? 'bg-slate-100 text-slate-400' : 'bg-violet-600 text-white'
+              }`}
+            >
+              <span
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono font-bold shrink-0 ${
+                  isPending ? 'bg-slate-200 text-slate-500' : 'bg-violet-500 text-white'
+                }`}
+              >
+                {step}
+              </span>
+              {label}
+            </div>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
 
 interface SampleManagerViewProps {
   samples: Sample[];
@@ -170,6 +240,8 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
   };
   // Main view state
   const [activeTab, setActiveTab] = useState<'list' | 'bulk-excel' | 'bulk-images'>(forceTab || 'list');
+
+  const viewTab = forceTab ?? activeTab;
 
   useEffect(() => {
     if (forceTab) {
@@ -503,6 +575,22 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
     selectedCountry === '한국' || selectedCountry === '중국'
       ? ['전체', ...categoriesByCountry[selectedCountry]]
       : ['전체', ...topLevelCategoryNames];
+
+  const sampleStatusCounts: Record<SampleStatus, number> = {
+    대여가능: samples.filter((s) => s.status === '대여가능').length,
+    대여중: samples.filter((s) => s.status === '대여중').length,
+    연체중: samples.filter((s) => s.status === '연체중').length,
+    부평보관: samples.filter((s) => s.status === '부평보관').length,
+    분실: samples.filter((s) => s.status === '분실').length,
+  };
+
+  const STATUS_FILTER_CHIPS: { id: SampleStatus; label: string; active: string; idle: string }[] = [
+    { id: '대여가능', label: '대여가능', active: 'bg-emerald-600 text-white', idle: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
+    { id: '대여중', label: '대여중', active: 'bg-blue-600 text-white', idle: 'bg-blue-50 text-blue-700 hover:bg-blue-100' },
+    { id: '연체중', label: '연체', active: 'bg-rose-600 text-white', idle: 'bg-rose-50 text-rose-700 hover:bg-rose-100' },
+    { id: '부평보관', label: '부평보관', active: 'bg-amber-600 text-white', idle: 'bg-amber-50 text-amber-700 hover:bg-amber-100' },
+    { id: '분실', label: '분실', active: 'bg-slate-600 text-white', idle: 'bg-slate-100 text-slate-700 hover:bg-slate-200' },
+  ];
 
   // Excel file / text parser helper (tsv parser)
   const handleParseExcelText = () => {
@@ -1385,7 +1473,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
   // Share sample asset link or copy info
   const handleShareImage = (sample: Sample) => {
-    const shareText = `[디자인 의류 자산] 상품명: ${sample.name || '미등록'} | 코드: ${sample.code} | 대여료: ₩${(sample.rentalFee ?? 15000).toLocaleString()} | 상태: ${sample.status}`;
+    const shareText = `[디자인 의류 자산] 상품명: ${sample.name || '미등록'} | 코드: ${sample.code} | 대여료: ₩${(sample.rentalFee ?? 15000).toLocaleString()} | 상태: ${sampleStatusLabel(sample.status)}`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(shareText)
         .then(() => alert("해당 의류 정보가 클립보드에 복사되었습니다!"))
@@ -1414,16 +1502,20 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
     }
   };
 
+  const aiNewBulkStep = resolveAiNewBulkStep(importedMeta, aiDraftItems);
+  const mappingBulkStep = resolveMappingBulkStep(uploadedPreviewFiles);
+
   return (
     <div className="space-y-6" id="sample-manager-container">
       {/* Tab Select bar with high-end badges */}
+      {!forceTab && (
       <div className="flex border-b border-slate-200" id="management-subtabs">
         {[
           { id: 'list', label: '전체 상품', icon: FileText, desc: '전체 상품 목록 조회 및 단일 등록' },
           { id: 'bulk-images', label: '상품 이미지 일괄등록', icon: ImageIcon, desc: '촬영 이미지 다중 파일매칭 자동 매핑' }
         ].map((tab) => {
           const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
+          const isActive = viewTab === tab.id;
           return (
             <button
               key={tab.id}
@@ -1447,10 +1539,11 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
           );
         })}
       </div>
+      )}
 
       {/* RENDER ACTIVE VIEW */}
       <AnimatePresence mode="wait">
-        {activeTab === 'list' && (
+        {viewTab === 'list' && (
           <motion.div
             key="list-tab"
             initial={{ opacity: 0, y: 10 }}
@@ -1493,8 +1586,9 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                 </button>
               </div>
 
-              {/* Row 2: Screenshot 1 - Styled Control Chips & View Mode Toggle */}
-              <div className="flex flex-col lg:flex-row lg:justify-between items-stretch lg:items-center gap-x-3 gap-y-2.5 pt-2.5 border-t border-slate-100" id="filter-chips-row">
+              {/* Row 2–3: 필터 + 상태 칩 */}
+              <div className="pt-2.5 border-t border-slate-100 space-y-2.5">
+              <div className="flex flex-col lg:flex-row lg:justify-between items-stretch lg:items-center gap-x-3 gap-y-2.5" id="filter-chips-row">
                 <div className="flex flex-nowrap gap-x-2 items-center overflow-x-auto min-w-0 shrink">
                   
                   {/* Select Trigger chip matching Screenshot 1 [선택하기] */}
@@ -1609,23 +1703,6 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                     <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
                   </div>
 
-                  {/* Status Options select as outline chip */}
-                  <div className="relative shrink-0">
-                    <select
-                      value={selectedStatus}
-                      onChange={(e) => setSelectedStatus(e.target.value)}
-                      className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                    >
-                      <option value="전체">상태: 전체</option>
-                      <option value="대여가능">대여가능</option>
-                      <option value="대여중">대여중</option>
-                      <option value="연체중">연체중</option>
-                      <option value="부평보관">부평보관</option>
-                      <option value="분실">분실</option>
-                    </select>
-                    <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-                  </div>
-
                   {/* Registerer filter select */}
                   <div className="relative shrink-0">
                     <select
@@ -1697,6 +1774,23 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                   </div>
                 </div>
 
+              </div>
+
+              {/* 상태 필터 칩 (대여/반납 현황과 동일 패턴) */}
+              <div className="flex flex-wrap gap-2 items-center pt-2.5 border-t border-slate-100" id="sample-status-chips">
+                {STATUS_FILTER_CHIPS.map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setSelectedStatus(selectedStatus === chip.id ? '전체' : chip.id)}
+                    className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                      selectedStatus === chip.id ? chip.active : chip.idle
+                    }`}
+                  >
+                    {chip.label} {sampleStatusCounts[chip.id]}
+                  </button>
+                ))}
+              </div>
               </div>
             </div>
 
@@ -1841,7 +1935,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                                 <td className="py-3.5 px-2.5 text-left text-slate-600 text-[11px] whitespace-nowrap">{sample.registerer || '-'}</td>
                                 <td className="py-3.5 px-2.5 text-left">
                                   <span className={`text-[11px] font-bold py-1 px-2.5 rounded-full border ${getStatusBadgeStyle(sample.status)}`}>
-                                    {sample.status}
+                                    {sampleStatusLabel(sample.status)}
                                   </span>
                                 </td>
                                 <td className="py-3.5 px-2.5 text-left">
@@ -1963,7 +2057,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                           {/* Top floating badges inside card view */}
                           <div className="absolute top-2.5 left-2.5 flex flex-wrap gap-1 z-10">
                             <span className={`text-[9px] font-bold py-0.5 px-2 rounded-md border shadow-3xs ${getStatusBadgeStyle(sample.status)}`}>
-                              {sample.status}
+                              {sampleStatusLabel(sample.status)}
                             </span>
                           </div>
 
@@ -2049,7 +2143,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
         {/* Excel style Copy Paste bulk tab */}
         {/* Bulk image front back drag drop map tab */}
-        {activeTab === 'bulk-images' && (
+        {viewTab === 'bulk-images' && (
           <motion.div
             key="bulk-images-tab"
             initial={{ opacity: 0, y: 10 }}
@@ -2086,9 +2180,23 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
               </button>
             </div>
 
+            <AnimatePresence mode="wait">
             {/* Mode A: Image Mapping to Existing Closet Codes */}
             {bulkImagesMode === 'mapping' && (
-              <div className="space-y-6" id="bulk-images-mapping-block">
+              <motion.div
+                key="bulk-images-mapping-mode"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="space-y-6"
+                id="bulk-images-mapping-block"
+              >
+                <BulkProcessStepper
+                  steps={MAPPING_BULK_STEPS}
+                  currentStep={mappingBulkStep}
+                  id="mapping-bulk-stepper"
+                />
+
                 <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-xs space-y-4" id="images-instructions">
                   <h3 className="text-sm font-semibold text-slate-800">기존 샘플 이미지 일괄 교체</h3>
                   <p className="text-xs text-slate-500 leading-relaxed font-sans">
@@ -2316,12 +2424,25 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                     )}
                   </div>
                 )}
-              </div>
+              </motion.div>
             )}
 
             {/* Mode B: AI Assisted Bulk Clothes Creator */}
             {bulkImagesMode === 'ai-new' && (
-              <div className="space-y-6" id="bulk-images-ai-new-block">
+              <motion.div
+                key="bulk-images-ai-new-mode"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="space-y-6"
+                id="bulk-images-ai-new-block"
+              >
+                <BulkProcessStepper
+                  steps={AI_NEW_BULK_STEPS}
+                  currentStep={aiNewBulkStep}
+                  id="ai-new-bulk-stepper"
+                />
+
                 {/* 좌: 상품 정보 불러오기 / 우: 신규 샘플 이미지 일괄 등록 */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6" id="meta-import-panel">
                   {/* 좌측: 구글 스프레드시트 정보 불러오기 */}
@@ -2365,6 +2486,11 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                     </div>
                     <p className="text-xs text-slate-500 leading-relaxed font-sans">
                       촬영 사진들을 업로드하면 <b>Gemini AI</b>가 <b>컨디션</b>과 (시트에 값이 없는 경우) <b>색상·의류 계열·소재</b>를 보조로 채웁니다. 시트에서 불러온 값이 있으면 시트 값이 우선합니다.
+                    </p>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      <b>파일명 규칙 예시:</b>{' '}
+                      <code className="bg-slate-100 text-indigo-700 py-0.5 px-1 font-mono rounded">{'{품번}_00.jpg'}</code> (앞) /{' '}
+                      <code className="bg-slate-100 text-indigo-700 py-0.5 px-1 font-mono rounded">{'{품번}_b1.jpg'}</code> (뒤)
                     </p>
 
                     {/* Drag drop zone for Mode B */}
@@ -2980,8 +3106,9 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
                   </div>
                 )}
-              </div>
+              </motion.div>
             )}
+            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>
@@ -3031,7 +3158,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                   <div className="bg-slate-900 text-slate-400 p-2.5 border-b border-slate-800 flex items-center font-bold">상태</div>
                   <div className="bg-slate-950 p-2.5 border-b border-slate-800 flex items-center">
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getStatusBadgeStyle(viewingDetail.status)}`}>
-                      {viewingDetail.status}
+                      {sampleStatusLabel(viewingDetail.status)}
                     </span>
                   </div>
 
@@ -3740,7 +3867,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                       >
                         <option value="대여가능">대여가능</option>
                         <option value="대여중">대여중</option>
-                        <option value="연체중">연체중</option>
+                        <option value="연체중">연체</option>
                         <option value="부평보관">부평보관</option>
                         <option value="분실">분실</option>
                       </select>

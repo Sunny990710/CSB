@@ -6,7 +6,7 @@ import {
   LayoutGrid, Folder, Activity, Trash2, Sparkles, Database,
   Upload, ShoppingCart, RotateCcw, ArrowUpRight, History, Tags, Tag, User, Clock, UserCheck, Library
 } from 'lucide-react';
-import { Sample, Rental, Member, Group, Category, Brand, ContentNode } from './types';
+import { Sample, Rental, RentalAgreement, Member, Group, Category, Brand, ContentNode, effectiveRentalStatus } from './types';
 import DashboardView from './components/DashboardView';
 import SampleManagerView from './components/SampleManagerView';
 import MemberManagerView from './components/MemberManagerView';
@@ -30,6 +30,7 @@ export default function App() {
   // Master states loaded from full db endpoint
   const [samples, setSamples] = useState<Sample[]>([]);
   const [rentals, setRentals] = useState<Rental[]>([]);
+  const [rentalAgreements, setRentalAgreements] = useState<RentalAgreement[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -50,6 +51,7 @@ export default function App() {
       .then((data) => {
         setSamples(data.samples || []);
         setRentals(data.rentals || []);
+        setRentalAgreements(data.rentalAgreements || []);
         setMembers(data.members || []);
         setGroups(data.groups || []);
         setCategories(data.categories || []);
@@ -57,6 +59,11 @@ export default function App() {
         setContents(data.contents || []);
         setErrorWord('');
         setLoading(false);
+        return fetch('/api/rentals/sync-overdue', { method: 'POST' });
+      })
+      .then((res) => (res?.ok ? res.json() : null))
+      .then((sync) => {
+        if (sync?.changed) handleSilentRefresh();
       })
       .catch((err) => {
         console.error("Fetch DB error:", err);
@@ -75,6 +82,7 @@ export default function App() {
       .then((data) => {
         setSamples(data.samples || []);
         setRentals(data.rentals || []);
+        setRentalAgreements(data.rentalAgreements || []);
         setMembers(data.members || []);
         setGroups(data.groups || []);
         setCategories(data.categories || []);
@@ -108,7 +116,7 @@ export default function App() {
   };
 
   // Generic Save / Update back to the server.ts JSON db
-  const handleSaveDB = (newSamples: Sample[], newMembers?: Member[], newGroups?: Group[], newRentals?: Rental[], newCategories?: Category[], newBrands?: Brand[], newContents?: ContentNode[]) => {
+  const handleSaveDB = (newSamples: Sample[], newMembers?: Member[], newGroups?: Group[], newRentals?: Rental[], newCategories?: Category[], newBrands?: Brand[], newContents?: ContentNode[], newRentalAgreements?: RentalAgreement[]) => {
     // Optimistic UI update
     const updatedSamples = newSamples;
     const updatedMembers = newMembers || members;
@@ -117,6 +125,7 @@ export default function App() {
     const updatedCategories = newCategories || categories;
     const updatedBrands = newBrands || brands;
     const updatedContents = newContents || contents;
+    const updatedRentalAgreements = newRentalAgreements || rentalAgreements;
 
     setSamples(updatedSamples);
     setMembers(updatedMembers);
@@ -125,6 +134,7 @@ export default function App() {
     setCategories(updatedCategories);
     setBrands(updatedBrands);
     setContents(updatedContents);
+    setRentalAgreements(updatedRentalAgreements);
 
     fetch('/api/db/save', {
       method: 'POST',
@@ -134,6 +144,7 @@ export default function App() {
         members: updatedMembers,
         groups: updatedGroups,
         rentals: updatedRentals,
+        rentalAgreements: updatedRentalAgreements,
         categories: updatedCategories,
         brands: updatedBrands,
         contents: updatedContents
@@ -161,9 +172,9 @@ export default function App() {
   const DUE_SOON_DAYS = 3;
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
-  const overdueRentals = rentals.filter((r) => r.status === '연체중');
+  const overdueRentals = rentals.filter((r) => effectiveRentalStatus(r) === '연체중');
   const dueSoonRentals = rentals.filter((r) => {
-    if (r.status === '반납완료' || r.status === '연체중') return false;
+    if (effectiveRentalStatus(r) !== '대여중') return false;
     if (!r.dueDate) return false;
     const due = new Date(r.dueDate);
     due.setHours(0, 0, 0, 0);
@@ -448,7 +459,7 @@ export default function App() {
                         <div className="max-h-80 overflow-y-auto">
                           {notifCount === 0 ? (
                             <div className="px-4 py-8 text-center text-[11px] text-slate-400 font-semibold">
-                              연체 중이거나 반납이 임박한 상품이 없습니다.
+                              연체이거나 반납이 임박한 상품이 없습니다.
                             </div>
                           ) : (
                             <>
@@ -465,7 +476,7 @@ export default function App() {
                                   <div className="min-w-0 flex-1">
                                     <div className="text-[11px] font-bold text-slate-800 truncate">{r.sampleName}</div>
                                     <div className="text-[10px] text-slate-400 truncate">{r.borrowerName} · {r.sampleCode}</div>
-                                    <div className="text-[10px] font-bold text-rose-500 mt-0.5">연체중 · 반납예정 {r.dueDate}</div>
+                                    <div className="text-[10px] font-bold text-rose-500 mt-0.5">연체 · 반납예정 {r.dueDate}</div>
                                   </div>
                                 </button>
                               ))}
@@ -567,6 +578,7 @@ export default function App() {
                 {activeTab === 'upload' && (
                   <div id="upload-subview-frame">
                     <SampleManagerView
+                      key="upload-bulk-images"
                       samples={samples}
                       onSaveDB={(newSamples) => handleSaveDB(newSamples)}
                       forceTab="bulk-images"
@@ -579,6 +591,7 @@ export default function App() {
                 {activeTab === 'samples' && (
                   <div id="samples-subview-frame">
                     <SampleManagerView
+                      key="samples-list"
                       samples={samples}
                       onSaveDB={(newSamples) => handleSaveDB(newSamples)}
                       forceTab="list"
@@ -616,6 +629,7 @@ export default function App() {
                     </div>
                     <RentalManagerView
                       rentals={rentals}
+                      rentalAgreements={rentalAgreements}
                       samples={samples}
                       members={members}
                       onSaveDB={(newRentals, newSamples) => handleSaveDB(newSamples, members, groups, newRentals)}

@@ -109,6 +109,33 @@ export interface ContentNode {
   createdAt?: string;         // 등록일
 }
 
+export interface RentalAgreementItem {
+  sampleCode: string;
+  sampleName: string;
+  category: string;
+  brand: string;
+  remark?: string;
+}
+
+export interface RentalAgreement {
+  agreementId: string;
+  borrowerId: string;
+  borrowerName: string;
+  borrowerEmail: string;
+  borrowerAffiliation: string;
+  brand: string;
+  purpose: string;
+  rentDate: string;
+  dueDate: string;
+  rentDays: number;
+  quantity: number;
+  items: RentalAgreementItem[];
+  signatureStatus: 'pending' | 'signed';
+  signedAt?: string | null;
+  signedBy?: string | null;
+  createdAt: string;
+}
+
 export interface Rental {
   rentalId: string;
   sampleCode: string;
@@ -129,4 +156,37 @@ export interface Rental {
     subject: string;
     content: string;
   }[];
+  agreementId?: string | null;
+}
+
+const parseDateOnlyUtc = (dateStr: string) => {
+  const d = new Date(String(dateStr).replace(' ', 'T'));
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+};
+
+export const todayDateStr = () => new Date().toISOString().substring(0, 10);
+
+/** 반납예정일이 지났고 아직 반납되지 않은 경우 */
+export function isRentalOverdue(r: Rental, refDate: string = todayDateStr()): boolean {
+  if (r.status === '반납완료') return false;
+  if (r.status === '연체중') return true;
+  if (r.status !== '대여중' || !r.dueDate) return false;
+  return parseDateOnlyUtc(r.dueDate) < parseDateOnlyUtc(refDate);
+}
+
+/** 화면·집계용 실제 상태 (반납예정일 경과 시 자동 연체) */
+export function effectiveRentalStatus(r: Rental, refDate: string = todayDateStr()): Rental['status'] {
+  if (r.status === '반납완료') return '반납완료';
+  if (isRentalOverdue(r, refDate)) return '연체중';
+  return r.status;
+}
+
+/** UI 표시용 샘플 상태 라벨 (데이터 값 '연체중' → 화면 '연체') */
+export function sampleStatusLabel(status: SampleStatus): string {
+  return status === '연체중' ? '연체' : status;
+}
+
+/** UI 표시용 대여 상태 라벨 */
+export function rentalStatusLabel(status: Rental['status']): string {
+  return status === '연체중' ? '연체' : status;
 }

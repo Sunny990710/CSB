@@ -3,18 +3,40 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   User, ArrowUpRight, ArrowDownLeft, X, Check, Sparkles,
   Clock, History, AlertCircle, RefreshCw, ScanLine, Barcode, CheckCircle2,
-  Search, Calendar, Trash2, Package,
+  Search, Calendar, Trash2, Package, FileText, Printer, Download, PenLine,
 } from 'lucide-react';
-import { Sample, Rental, Member } from '../types';
+import { Sample, Rental, RentalAgreement, Member, rentalStatusLabel, effectiveRentalStatus } from '../types';
 
 interface RentalManagerViewProps {
   rentals: Rental[];
+  rentalAgreements: RentalAgreement[];
   samples: Sample[];
   members: Member[];
   onSaveDB: (newRentals: Rental[], newSamples: Sample[]) => void;
   onRefreshData?: () => void;
   view: 'scan' | 'status';
 }
+
+interface BorrowCartItem {
+  sampleCode: string;
+  sampleName: string;
+  brand: string;
+  category: string;
+  remark?: string;
+}
+
+const AGREEMENT_TERMS = [
+  '대여 샘플은 지정된 목적(기획·촬영·검수 등) 외 사용을 금하며, 훼손·오염·분실 시 즉시 담당자에게 보고해야 합니다.',
+  '샘플 훼손·분실 시 변상금 및 수리비가 청구될 수 있으며, 변상 기준은 내부 자산관리 규정을 따릅니다.',
+  '반납 예정일을 초과할 경우 연체료가 부과되며, 4주 이상 연체 시 분실 처리 및 변상 절차가 진행될 수 있습니다.',
+  '대여 중 샘플의 재대여·양도·외부 반출(촬영장 등)은 사전 승인 없이 불가합니다.',
+  '본 동의서에 전자서명함으로써 위 사항을 확인하였으며, 관련 규정을 준수할 것에 동의합니다.',
+];
+
+const rentPeriodLabel = (days: number) => {
+  if (days % 7 === 0 && days >= 7) return `${days / 7}주`;
+  return `${days}일`;
+};
 
 type ScanKind = 'borrow' | 'return' | 'error';
 interface ScanLogEntry {
@@ -33,8 +55,84 @@ interface ScanLogEntry {
 
 const todayStr = () => new Date().toISOString().substring(0, 10);
 
+const MS_DAY = 86400000;
+
+const parseDateOnly = (dateStr: string) => {
+  const d = new Date(dateStr.replace(' ', 'T'));
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+};
+
+const daysUntilDueOf = (dueDate: string, refDate: string) => {
+  if (!dueDate) return 0;
+  return Math.floor((parseDateOnly(dueDate) - parseDateOnly(refDate)) / MS_DAY);
+};
+
+const overdueDaysOfRental = (r: Rental, refDate: string) => {
+  if (!r.dueDate) return 0;
+  const end = r.returnDate || refDate;
+  const diff = Math.floor((parseDateOnly(end) - parseDateOnly(r.dueDate)) / MS_DAY);
+  return diff > 0 ? diff : 0;
+};
+
+const formatDDay = (daysLeft: number) => {
+  if (daysLeft <= 0) return 'D-00';
+  if (daysLeft < 10) return `D-0${daysLeft}`;
+  return `D-${daysLeft}`;
+};
+
+type OverdueStage = {
+  label: string;
+  emailType: 'gentle' | 'warning' | 'strict';
+  badgeClass: string;
+};
+
+const getOverdueStage = (daysOverdue: number): OverdueStage | null => {
+  if (daysOverdue <= 0) return null;
+  if (daysOverdue <= 6) {
+    return {
+      label: '1주차 · 안내',
+      emailType: 'gentle',
+      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100',
+    };
+  }
+  if (daysOverdue <= 13) {
+    return {
+      label: '2주차 · 경고',
+      emailType: 'warning',
+      badgeClass: 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100',
+    };
+  }
+  if (daysOverdue <= 19) {
+    return {
+      label: '3주차 · 최종통보',
+      emailType: 'warning',
+      badgeClass: 'bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100',
+    };
+  }
+  return {
+    label: '4주차 · 분실/보상',
+    emailType: 'strict',
+    badgeClass: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100',
+  };
+};
+
+const renderDueSubLabel = (rental: Rental, today: string) => {
+  if (rental.status === '반납완료') {
+    const od = overdueDaysOfRental(rental, today);
+    return <span className="text-[10px] text-slate-400 font-medium mt-0.5 block">+{od}일 연체</span>;
+  }
+  const effective = effectiveRentalStatus(rental, today);
+  if (effective === '연체중') {
+    const od = overdueDaysOfRental(rental, today);
+    return <span className="text-[10px] text-rose-600 font-bold mt-0.5 block">+{od}일 연체</span>;
+  }
+  const left = daysUntilDueOf(rental.dueDate, today);
+  return <span className="text-[10px] text-slate-400 font-medium mt-0.5 block">{formatDDay(left)}</span>;
+};
+
 export default function RentalManagerView({
   rentals,
+  rentalAgreements,
   samples,
   members,
   onSaveDB,
@@ -49,6 +147,11 @@ export default function RentalManagerView({
   const [borrowDays, setBorrowDays] = useState('7');
   const [borrowCode, setBorrowCode] = useState('');
   const [returnCode, setReturnCode] = useState('');
+  const [borrowCart, setBorrowCart] = useState<BorrowCartItem[]>([]);
+  const [creatingAgreement, setCreatingAgreement] = useState(false);
+  const [signingAgreementId, setSigningAgreementId] = useState<string | null>(null);
+  const [viewAgreement, setViewAgreement] = useState<RentalAgreement | null>(null);
+  const [agreeChecked, setAgreeChecked] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'error'; msg: string } | null>(null);
 
@@ -97,8 +200,22 @@ export default function RentalManagerView({
 
   const selectBorrower = (member: Member) => {
     setBorrowerInput(member.memberId);
+    setBorrowCart([]);
     window.setTimeout(() => borrowCodeRef.current?.focus(), 50);
   };
+
+  const removeFromCart = (code: string) => {
+    setBorrowCart((prev) => prev.filter((item) => item.sampleCode !== code));
+  };
+
+  const sortedAgreements = rentalAgreements
+    .slice()
+    .sort((a, b) => {
+      if (a.signatureStatus !== b.signatureStatus) {
+        return a.signatureStatus === 'pending' ? -1 : 1;
+      }
+      return b.rentDate.localeCompare(a.rentDate);
+    });
 
   // Keep focus on the active scan field
   useEffect(() => {
@@ -113,8 +230,8 @@ export default function RentalManagerView({
 
   // --- Derived summary metrics ------------------------------------------
   const today = todayStr();
-  const onLoanCount = rentals.filter((r) => r.status === '대여중').length;
-  const overdueCount = rentals.filter((r) => r.status === '연체중').length;
+  const onLoanCount = rentals.filter((r) => effectiveRentalStatus(r, today) === '대여중').length;
+  const overdueCount = rentals.filter((r) => effectiveRentalStatus(r, today) === '연체중').length;
   const returnedCount = rentals.filter((r) => r.status === '반납완료').length;
 
   const pushLog = (entry: Omit<ScanLogEntry, 'id' | 'time'>) => {
@@ -133,8 +250,8 @@ export default function RentalManagerView({
     window.setTimeout(() => setFeedback(null), 2600);
   };
 
-  // --- Borrow handler ----------------------------------------------------
-  const handleBorrowScan = async (e: React.FormEvent) => {
+  // --- Add to borrow cart (scan) -----------------------------------------
+  const handleBorrowScan = (e: React.FormEvent) => {
     e.preventDefault();
     const code = borrowCode.trim();
 
@@ -149,46 +266,127 @@ export default function RentalManagerView({
     }
     if (!code) return;
 
-    setProcessing(true);
+    const sample = samples.find((x) => x.code === code);
+    if (!sample) {
+      flashFeedback('error', `등록되지 않은 상품 코드입니다 · ${code}`);
+      setBorrowCode('');
+      borrowCodeRef.current?.focus();
+      return;
+    }
+    if (sample.status !== '대여가능') {
+      flashFeedback('error', `${sample.code}는 현재 대여 가능한 상태가 아닙니다. (${sample.status})`);
+      setBorrowCode('');
+      borrowCodeRef.current?.focus();
+      return;
+    }
+    if (borrowCart.some((item) => item.sampleCode === code)) {
+      flashFeedback('error', '이미 장바구니에 담긴 샘플입니다.');
+      setBorrowCode('');
+      borrowCodeRef.current?.focus();
+      return;
+    }
+
+    setBorrowCart((prev) => [
+      ...prev,
+      {
+        sampleCode: sample.code,
+        sampleName: sample.name,
+        brand: sample.brand,
+        category: sample.category || sample.classification || '-',
+        remark: sample.season || '',
+      },
+    ]);
+    flashFeedback('ok', `장바구니 추가 · ${sample.name}`);
+    setBorrowCode('');
+    borrowCodeRef.current?.focus();
+  };
+
+  const handleCreateAgreement = async () => {
+    if (!borrower) {
+      flashFeedback('error', '대여자를 먼저 확인해 주세요.');
+      return;
+    }
+    if (borrowCart.length === 0) {
+      flashFeedback('error', '스캔한 샘플이 없습니다. 바코드를 스캔해 주세요.');
+      return;
+    }
+
+    setCreatingAgreement(true);
     try {
-      const res = await fetch('/api/rentals/borrow', {
+      const res = await fetch('/api/rental-agreements', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sampleCode: code, borrowerId: borrower.memberId, rentDays: borrowDays }),
+        body: JSON.stringify({
+          borrowerId: borrower.memberId,
+          rentDays: borrowDays,
+          purpose: '샘플 대여',
+          items: borrowCart.map((item) => ({ sampleCode: item.sampleCode, remark: item.remark })),
+        }),
       });
       const data = await res.json();
-
       if (data.success) {
-        const s = samples.find((x) => x.code === code);
-        const due = new Date();
-        due.setDate(due.getDate() + (parseInt(borrowDays, 10) || 0));
-        const dueStr = due.toISOString().substring(0, 10);
-        flashFeedback('ok', `대여 완료 · ${s?.name || code}`);
-        pushLog({
-          kind: 'borrow',
-          title: s?.name || '샘플',
-          sub: `${borrower.name} · ${borrower.groupName}`,
-          image: s?.imgFrontClean || s?.imgFront || s?.imgFlat || s?.imgBackClean || s?.imgBack,
-          code,
-          brand: s?.brand,
-          locationNo: s?.locationNo,
-          dueDate: dueStr,
-          days: borrowDays,
-        });
-        setBorrowCode('');
+        flashFeedback('ok', `동의서 ${data.agreement.agreementId} 작성 · 전자서명 후 대여 처리됩니다.`);
+        setBorrowCart([]);
+        setViewAgreement(data.agreement);
+        setAgreeChecked(false);
         onRefreshData?.();
       } else {
-        flashFeedback('error', data.message || '대여 처리에 실패했습니다.');
-        pushLog({ kind: 'error', title: `${code} 대여 실패`, sub: data.message || '' });
-        setBorrowCode('');
+        flashFeedback('error', data.message || '동의서 작성에 실패했습니다.');
       }
     } catch (err) {
       console.error(err);
-      flashFeedback('error', '서버 통신 오류로 대여가 취소되었습니다.');
+      flashFeedback('error', '동의서 작성 중 오류가 발생했습니다.');
     } finally {
-      setProcessing(false);
-      borrowCodeRef.current?.focus();
+      setCreatingAgreement(false);
     }
+  };
+
+  const handleSignAgreement = async (agreement: RentalAgreement) => {
+    if (!agreeChecked) {
+      flashFeedback('error', '동의 사항을 확인하고 체크박스에 동의해 주세요.');
+      return;
+    }
+
+    setSigningAgreementId(agreement.agreementId);
+    try {
+      const res = await fetch(`/api/rental-agreements/${agreement.agreementId}/sign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (data.success) {
+        flashFeedback('ok', data.message || '전자서명 완료 · 대여 처리되었습니다.');
+        for (const rental of data.rentals || []) {
+          const s = samples.find((x) => x.code === rental.sampleCode);
+          pushLog({
+            kind: 'borrow',
+            title: rental.sampleName || '샘플',
+            sub: `${agreement.borrowerName} · ${agreement.borrowerAffiliation}`,
+            image: s?.imgFrontClean || s?.imgFront || s?.imgFlat || s?.imgBackClean || s?.imgBack,
+            code: rental.sampleCode,
+            brand: s?.brand || rental.sampleBrand,
+            locationNo: s?.locationNo,
+            dueDate: rental.dueDate,
+            days: String(agreement.rentDays),
+          });
+        }
+        setViewAgreement(data.agreement);
+        setAgreeChecked(false);
+        onRefreshData?.();
+      } else {
+        flashFeedback('error', data.message || '전자서명 및 대여 처리에 실패했습니다.');
+      }
+    } catch (err) {
+      console.error(err);
+      flashFeedback('error', '전자서명 처리 중 오류가 발생했습니다.');
+    } finally {
+      setSigningAgreementId(null);
+    }
+  };
+
+  const openAgreementModal = (agreement: RentalAgreement) => {
+    setViewAgreement(agreement);
+    setAgreeChecked(agreement.signatureStatus === 'signed');
   };
 
   // --- Return handler ----------------------------------------------------
@@ -248,14 +446,16 @@ export default function RentalManagerView({
   };
 
   // --- AI overdue reminder ----------------------------------------------
-  const handleSendAutomatedEmail = async (rental: Rental) => {
+  const handleSendAutomatedEmail = async (rental: Rental, emailType?: 'gentle' | 'warning' | 'strict') => {
+    const daysOverdue = overdueDaysOfRental(rental, today);
+    const stage = getOverdueStage(daysOverdue);
+    const tone = emailType || stage?.emailType || (rental.notifyCount > 0 ? 'warning' : 'gentle');
+    const stageLabel = stage?.label || '반납 안내';
+
+    if (!confirm(`${rental.borrowerName} 님에게 [${stageLabel}] 메일을 발송하시겠습니까?`)) return;
+
     setSendingId(rental.rentalId);
     try {
-      const dueTime = new Date(rental.dueDate).getTime();
-      const todayTime = new Date(today).getTime();
-      const daysOverdue = Math.max(1, Math.ceil((todayTime - dueTime) / (1000 * 60 * 60 * 24)));
-      const tone = rental.notifyCount > 0 ? 'warning' : 'gentle';
-
       const draftRes = await fetch('/api/agent/draft-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -265,7 +465,7 @@ export default function RentalManagerView({
           sampleName: rental.sampleName,
           sampleCode: rental.sampleCode,
           dueDate: rental.dueDate,
-          daysOverdue,
+          daysOverdue: Math.max(1, daysOverdue),
           emailType: tone,
         }),
       });
@@ -306,7 +506,7 @@ export default function RentalManagerView({
         r.borrowerName.toLowerCase().includes(q) ||
         r.borrowerGroup.toLowerCase().includes(q) ||
         r.borrowerId.toLowerCase().includes(q);
-      const matchStatus = selectedStatus === '전체' || r.status === selectedStatus;
+      const matchStatus = selectedStatus === '전체' || effectiveRentalStatus(r, today) === selectedStatus;
       return matchSearch && matchStatus;
     })
     .slice()
@@ -321,16 +521,8 @@ export default function RentalManagerView({
       o2: s?.overdueFee2 ?? 20000,
     };
   };
-  // 연체일 계산: 반납완료면 (반납일 - 반납예정일), 대여중이면 (오늘 - 반납예정일), 음수면 0
-  const overdueDaysOf = (r: Rental): number => {
-    if (!r.dueDate) return 0;
-    const due = new Date(r.dueDate.replace(' ', 'T'));
-    const end = r.returnDate ? new Date(r.returnDate.replace(' ', 'T')) : new Date();
-    const dueDay = Date.UTC(due.getFullYear(), due.getMonth(), due.getDate());
-    const endDay = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
-    const diff = Math.floor((endDay - dueDay) / 86400000);
-    return diff > 0 ? diff : 0;
-  };
+  // 연체일 계산: 반납완료면 (반납일 - 반납예정일), 대여중/연체이면 (기준일 - 반납예정일), 음수면 0
+  const overdueDaysOf = (r: Rental): number => overdueDaysOfRental(r, today);
   const detailRows = detailView
     ? rentals.filter(
         (r) =>
@@ -346,6 +538,7 @@ export default function RentalManagerView({
 
       {/* ============ 스캔 워크스페이스 (대여 / 반납) ============ */}
       {view === 'scan' && (
+      <>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" id="rental-scan-workspace">
 
         {/* Left: 대여 / 반납 스캐너 (col-span-2) */}
@@ -541,11 +734,11 @@ export default function RentalManagerView({
                   </select>
                 </div>
 
-                {/* Step 2. 바코드 스캔 */}
+                {/* Step 2. 바코드 스캔 → 장바구니 */}
                 <form onSubmit={handleBorrowScan} className="space-y-1.5">
                   <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
                     <span className="w-4.5 h-4.5 rounded-full bg-indigo-600 text-white text-[10px] font-mono flex items-center justify-center">2</span>
-                    상품 바코드 스캔
+                    상품 바코드 스캔 (장바구니 담기)
                   </label>
                   <div className={`relative rounded-xl border-2 border-dashed transition-colors ${borrower ? 'border-indigo-300 bg-indigo-50/40' : 'border-slate-200 bg-slate-50'}`}>
                     <Barcode className={`absolute left-4 top-1/2 -translate-y-1/2 w-6 h-6 ${borrower ? 'text-indigo-500' : 'text-slate-300'}`} />
@@ -554,21 +747,81 @@ export default function RentalManagerView({
                       type="text"
                       value={borrowCode}
                       onChange={(e) => setBorrowCode(e.target.value)}
-                      disabled={!borrower || processing}
+                      disabled={!borrower}
                       placeholder={borrower ? '상품코드 입력 후 Enter (바코드 리더기 자동 입력)' : '먼저 대여자를 확인하세요'}
                       className="w-full pl-13 pr-4 py-4 bg-transparent text-base font-mono font-bold tracking-wider focus:outline-none disabled:cursor-not-allowed placeholder:font-sans placeholder:text-sm placeholder:font-medium placeholder:tracking-normal"
                     />
-                    {processing && <RefreshCw className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-indigo-500 animate-spin" />}
                   </div>
-                  <button
-                    type="submit"
-                    disabled={!borrower || !borrowCode.trim() || processing}
-                    className="w-full mt-2 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    <ArrowUpRight className="w-4 h-4" />
-                    대여 처리
-                  </button>
+                  <p className="text-[10.5px] text-slate-400 pl-1">
+                    스캔한 샘플은 장바구니에 담깁니다. 동의서 작성·전자서명 완료 후 대여 처리됩니다.
+                  </p>
                 </form>
+
+                {/* Step 3. 장바구니 + 동의서 작성 */}
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+                    <span className="w-4.5 h-4.5 rounded-full bg-indigo-600 text-white text-[10px] font-mono flex items-center justify-center">3</span>
+                    대여 리스트
+                    {borrowCart.length > 0 && (
+                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
+                        {borrowCart.length} PCS
+                      </span>
+                    )}
+                  </label>
+
+                  {borrowCart.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 py-8 text-center">
+                      <Package className="w-7 h-7 text-slate-300 mx-auto mb-2" />
+                      <p className="text-[11px] text-slate-400 font-medium">스캔한 샘플이 여기에 표시됩니다.</p>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-slate-200 overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-500">
+                            <th className="py-2 px-3">아이템</th>
+                            <th className="py-2 px-3">Sample NO.</th>
+                            <th className="py-2 px-3">브랜드</th>
+                            <th className="py-2 px-3 w-10"></th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {borrowCart.map((item) => (
+                            <tr key={item.sampleCode}>
+                              <td className="py-2 px-3 font-semibold text-slate-800">{item.category}</td>
+                              <td className="py-2 px-3 font-mono text-indigo-600 text-[11px]">{item.sampleCode}</td>
+                              <td className="py-2 px-3 text-blue-600 font-bold">{item.brand}</td>
+                              <td className="py-2 px-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => removeFromCart(item.sampleCode)}
+                                  className="p-1 rounded hover:bg-rose-50 text-slate-400 hover:text-rose-500 cursor-pointer"
+                                  title="삭제"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleCreateAgreement}
+                    disabled={!borrower || borrowCart.length === 0 || creatingAgreement}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {creatingAgreement ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <FileText className="w-4 h-4" />
+                    )}
+                    대여 동의서 작성 ({borrowCart.length || 0}건)
+                  </button>
+                </div>
               </div>
             ) : (
               /* ===== 반납 폼 ===== */
@@ -706,6 +959,78 @@ export default function RentalManagerView({
           </div>
         </div>
       </div>
+
+      {mode === 'borrow' && (
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden" id="rental-agreement-table">
+          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-indigo-500" />
+              <h3 className="text-sm font-extrabold text-slate-800">대여 동의서</h3>
+            </div>
+            <span className="text-[10px] font-bold text-slate-400">
+              서명 완료 후 대여 처리 · 미서명 {sortedAgreements.filter((a) => a.signatureStatus === 'pending').length}건
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                  <th className="py-3 px-4 whitespace-nowrap">동의서번호</th>
+                  <th className="py-3 px-4 whitespace-nowrap">대여자</th>
+                  <th className="py-3 px-4 whitespace-nowrap">브랜드</th>
+                  <th className="py-3 px-4 whitespace-nowrap">대여일</th>
+                  <th className="py-3 px-4 whitespace-nowrap">수량</th>
+                  <th className="py-3 px-4 whitespace-nowrap text-center">서명</th>
+                  <th className="py-3 px-4 whitespace-nowrap text-center">보기</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {sortedAgreements.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-14 text-center text-slate-400 font-medium">
+                      작성된 대여 동의서가 없습니다. 샘플 스캔 후 동의서를 작성해 주세요.
+                    </td>
+                  </tr>
+                ) : (
+                  sortedAgreements.map((agreement) => (
+                    <tr key={agreement.agreementId} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="py-3 px-4 font-mono font-bold text-slate-700 whitespace-nowrap">{agreement.agreementId}</td>
+                      <td className="py-3 px-4 font-bold text-slate-800 whitespace-nowrap">{agreement.borrowerName}</td>
+                      <td className="py-3 px-4 font-bold text-blue-600 whitespace-nowrap">{agreement.brand}</td>
+                      <td className="py-3 px-4 font-mono text-slate-500 whitespace-nowrap">{agreement.rentDate}</td>
+                      <td className="py-3 px-4 font-mono text-slate-700 whitespace-nowrap">{agreement.quantity} PCS</td>
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
+                        {agreement.signatureStatus === 'signed' ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-full">
+                            <CheckCircle2 className="w-3 h-3" />
+                            서명 완료
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-100 px-2.5 py-1 rounded-full">
+                            <PenLine className="w-3 h-3" />
+                            서명 대기
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => openAgreementModal(agreement)}
+                          className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          보기
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      </>
       )}
 
       {/* ============ 대여/반납 현황 테이블 ============ */}
@@ -759,7 +1084,7 @@ export default function RentalManagerView({
                   selectedStatus === '연체중' ? 'bg-rose-600 text-white' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
                 }`}
               >
-                연체중 {overdueCount}
+                연체 {overdueCount}
               </button>
               <button
                 onClick={() => setSelectedStatus(selectedStatus === '반납완료' ? '전체' : '반납완료')}
@@ -794,7 +1119,7 @@ export default function RentalManagerView({
                 <th className="py-3 px-4 text-left whitespace-nowrap">반납예정</th>
                 <th className="py-3 px-4 text-left whitespace-nowrap">반납일</th>
                 <th className="py-3 px-4 text-left whitespace-nowrap">상태</th>
-                <th className="py-3 px-4 text-left whitespace-nowrap">보기</th>
+                <th className="py-3 px-4 text-left whitespace-nowrap">단계</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
@@ -806,8 +1131,9 @@ export default function RentalManagerView({
                 </tr>
               ) : (
                 filteredRentals.map((rental, index) => {
-                  const isOverdue = rental.status === '연체중';
-                  const isReturned = rental.status === '반납완료';
+                  const effectiveStatus = effectiveRentalStatus(rental, today);
+                  const isOverdue = effectiveStatus === '연체중';
+                  const isReturned = effectiveStatus === '반납완료';
                   const s = samples.find((x) => x.code === rental.sampleCode);
                   const thumb = s?.imgFrontClean || s?.imgFront || s?.imgFlat;
 
@@ -856,6 +1182,7 @@ export default function RentalManagerView({
                       {/* 반납예정 */}
                       <td className="py-3.5 px-4 text-left font-mono text-[11px] whitespace-nowrap">
                         <span className={isOverdue ? 'text-rose-600 font-bold' : 'text-slate-500'}>{rental.dueDate}</span>
+                        {renderDueSubLabel(rental, today)}
                       </td>
                       {/* 반납일 */}
                       <td className="py-3.5 px-4 text-left font-mono text-[11px] whitespace-nowrap">
@@ -876,33 +1203,47 @@ export default function RentalManagerView({
                               : 'bg-blue-50 text-blue-700'
                           }`}
                         >
-                          {rental.status}
+                          {rentalStatusLabel(effectiveStatus)}
                         </span>
                       </td>
-                      {/* 보기 */}
+                      {/* 단계 */}
                       <td className="py-3.5 px-4 text-left">
-                        <div className="flex items-center justify-start gap-1 whitespace-nowrap">
-                          <button
-                            onClick={() =>
-                              setDetailView({ mode: 'returned', borrowerId: rental.borrowerId, borrowerName: rental.borrowerName })
-                            }
-                            className="bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 active:scale-95 transition-all p-1.5 rounded-lg cursor-pointer flex items-center gap-1 shrink-0"
-                            title="이 대여자의 반납 목록 보기"
-                          >
-                            <ArrowDownLeft className="w-3.5 h-3.5 shrink-0" />
-                            <span className="text-[10px] font-bold">반납</span>
-                          </button>
-                          <button
-                            onClick={() =>
-                              setDetailView({ mode: 'active', borrowerId: rental.borrowerId, borrowerName: rental.borrowerName })
-                            }
-                            className="bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 active:scale-95 transition-all p-1.5 rounded-lg cursor-pointer flex items-center gap-1 shrink-0"
-                            title="이 대여자의 대여중 목록 보기"
-                          >
-                            <ArrowUpRight className="w-3.5 h-3.5 shrink-0" />
-                            <span className="text-[10px] font-bold">대여</span>
-                          </button>
-                        </div>
+                        {isOverdue ? (() => {
+                          const od = overdueDaysOf(rental);
+                          const stage = getOverdueStage(od);
+                          if (!stage) return <span className="text-slate-300 text-[10px]">-</span>;
+                          return (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleSendAutomatedEmail(rental, stage.emailType)}
+                                disabled={sendingId === rental.rentalId}
+                                className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-full border transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap ${stage.badgeClass}`}
+                                title={`${stage.label} 메일 발송`}
+                              >
+                                {sendingId === rental.rentalId ? (
+                                  <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
+                                ) : (
+                                  <Sparkles className="w-3 h-3 shrink-0" />
+                                )}
+                                {stage.label}
+                              </button>
+                              {rental.notifyCount > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedRentalForHistory(rental)}
+                                  className="inline-flex items-center gap-0.5 text-[10px] font-mono font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 py-0.5 px-1.5 rounded-full border border-indigo-200 cursor-pointer shrink-0"
+                                  title="발송 이력"
+                                >
+                                  <History className="w-3 h-3 shrink-0" />
+                                  {rental.notifyCount}
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })() : (
+                          <span className="text-slate-300 text-[10px]">-</span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -951,7 +1292,7 @@ export default function RentalManagerView({
                     <th className="py-2.5 px-3 whitespace-nowrap text-right">연체비용(1차)</th>
                     <th className="py-2.5 px-3 whitespace-nowrap text-right">연체비용(2차)</th>
                     <th className="py-2.5 px-3 whitespace-nowrap text-center">연체일</th>
-                    {detailView.mode === 'active' && <th className="py-2.5 px-3 whitespace-nowrap text-center">반납 요청</th>}
+                    {detailView.mode === 'active' && <th className="py-2.5 px-3 whitespace-nowrap text-center">단계</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
@@ -964,7 +1305,7 @@ export default function RentalManagerView({
                   ) : (
                     detailRows.map((r) => {
                       const fee = feeOf(r.sampleCode);
-                      const rowOverdue = r.status === '연체중';
+                      const rowOverdue = effectiveRentalStatus(r, today) === '연체중';
                       return (
                         <tr key={r.rentalId} className={rowOverdue ? 'bg-rose-50/30' : ''}>
                           <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px] whitespace-nowrap">{r.rentalId}</td>
@@ -975,9 +1316,15 @@ export default function RentalManagerView({
                           <td className="py-2.5 px-3 font-mono text-slate-500 text-[11px] whitespace-nowrap">{r.rentDate}</td>
                           <td className="py-2.5 px-3 font-mono text-[11px] whitespace-nowrap">
                             {detailView.mode === 'active' ? (
-                              <span className={rowOverdue ? 'text-rose-600 font-bold' : 'text-slate-500'}>{r.dueDate}</span>
+                              <>
+                                <span className={rowOverdue ? 'text-rose-600 font-bold' : 'text-slate-500'}>{r.dueDate}</span>
+                                {renderDueSubLabel(r, today)}
+                              </>
                             ) : (
-                              <span className="text-emerald-600 font-bold">{r.returnDate || '-'}</span>
+                              <>
+                                <span className="text-slate-500">{r.dueDate}</span>
+                                {renderDueSubLabel(r, today)}
+                              </>
                             )}
                           </td>
                           <td className="py-2.5 px-3 font-mono text-slate-700 text-[11px] text-right whitespace-nowrap">{fee.rental.toLocaleString()}원</td>
@@ -991,33 +1338,40 @@ export default function RentalManagerView({
                           </td>
                           {detailView.mode === 'active' && (
                             <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                              {rowOverdue ? (
-                                <div className="flex items-center justify-center gap-1.5">
-                                  <button
-                                    onClick={() => handleSendAutomatedEmail(r)}
-                                    disabled={sendingId === r.rentalId}
-                                    className="bg-rose-600 hover:bg-rose-700 active:scale-95 text-white py-1 px-2 rounded-lg font-bold text-[10px] flex items-center gap-1 cursor-pointer disabled:opacity-50 shrink-0"
-                                    title="반납 요청 메일 발송"
-                                  >
-                                    {sendingId === r.rentalId ? (
-                                      <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
-                                    ) : (
-                                      <Sparkles className="w-3 h-3 shrink-0" />
-                                    )}
-                                    메일 발송
-                                  </button>
-                                  {r.notifyCount > 0 && (
+                              {rowOverdue ? (() => {
+                                const od = overdueDaysOf(r);
+                                const stage = getOverdueStage(od);
+                                if (!stage) return <span className="text-slate-300 text-[10px]">-</span>;
+                                return (
+                                  <div className="flex items-center justify-center gap-1.5">
                                     <button
-                                      onClick={() => setSelectedRentalForHistory(r)}
-                                      className="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 py-1 px-1.5 rounded-full border border-indigo-200 cursor-pointer shrink-0"
-                                      title="발송 이력"
+                                      type="button"
+                                      onClick={() => handleSendAutomatedEmail(r, stage.emailType)}
+                                      disabled={sendingId === r.rentalId}
+                                      className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-full border transition-colors cursor-pointer disabled:opacity-50 shrink-0 ${stage.badgeClass}`}
+                                      title={`${stage.label} 메일 발송`}
                                     >
-                                      <History className="w-3 h-3 shrink-0" />
-                                      {r.notifyCount}
+                                      {sendingId === r.rentalId ? (
+                                        <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
+                                      ) : (
+                                        <Sparkles className="w-3 h-3 shrink-0" />
+                                      )}
+                                      {stage.label}
                                     </button>
-                                  )}
-                                </div>
-                              ) : (
+                                    {r.notifyCount > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setSelectedRentalForHistory(r)}
+                                        className="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 py-1 px-1.5 rounded-full border border-indigo-200 cursor-pointer shrink-0"
+                                        title="발송 이력"
+                                      >
+                                        <History className="w-3 h-3 shrink-0" />
+                                        {r.notifyCount}
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })() : (
                                 <span className="text-slate-300 text-[10px]">-</span>
                               )}
                             </td>
@@ -1086,6 +1440,152 @@ export default function RentalManagerView({
           </div>
         </div>
       )}
+
+      {/* ============ 샘플 대여 동의서 모달 ============ */}
+      {viewAgreement && (() => {
+        const agreement = rentalAgreements.find((a) => a.agreementId === viewAgreement.agreementId) || viewAgreement;
+        const isPending = agreement.signatureStatus === 'pending';
+        const isSigning = signingAgreementId === agreement.agreementId;
+
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto"
+            onClick={() => { setViewAgreement(null); setAgreeChecked(false); }}
+          >
+            <div
+              className="bg-white rounded-2xl max-w-3xl w-full border border-slate-100 shadow-2xl overflow-hidden flex flex-col max-h-[92vh] my-4"
+              onClick={(e) => e.stopPropagation()}
+              id="rental-agreement-modal"
+            >
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-indigo-600" />
+                  <h4 className="text-base font-extrabold text-slate-800">샘플 대여 동의서</h4>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setViewAgreement(null); setAgreeChecked(false); }}
+                  className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="overflow-y-auto p-5 space-y-5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-slate-50 rounded-xl p-4 border border-slate-100 text-[11px]">
+                  {[
+                    ['동의서번호', agreement.agreementId],
+                    ['브랜드', agreement.brand],
+                    ['대여 목적', agreement.purpose],
+                    ['대여자', agreement.borrowerName],
+                    ['이메일', agreement.borrowerEmail],
+                    ['소속', agreement.borrowerAffiliation],
+                    ['대여일', agreement.rentDate],
+                    ['반납 예정일', `${agreement.dueDate} · ${rentPeriodLabel(agreement.rentDays)}`],
+                    ['총 수량', `${agreement.quantity} PCS`],
+                  ].map(([label, value]) => (
+                    <div key={label} className="min-w-0">
+                      <span className="text-[9.5px] font-bold text-slate-400 block mb-0.5">{label}</span>
+                      <span className="font-bold text-slate-800 break-all">{value}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div>
+                  <h5 className="text-xs font-extrabold text-slate-700 mb-2">샘플 대여 리스트</h5>
+                  <div className="rounded-xl border border-slate-200 overflow-hidden">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-500">
+                          <th className="py-2 px-3 w-10">No</th>
+                          <th className="py-2 px-3">아이템</th>
+                          <th className="py-2 px-3">Sample NO.</th>
+                          <th className="py-2 px-3">비고</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {agreement.items.map((item, idx) => (
+                          <tr key={item.sampleCode}>
+                            <td className="py-2 px-3 text-slate-400 font-mono">{idx + 1}</td>
+                            <td className="py-2 px-3 font-semibold text-slate-800">{item.category}</td>
+                            <td className="py-2 px-3 font-mono text-indigo-600">{item.sampleCode}</td>
+                            <td className="py-2 px-3 text-slate-500">{item.remark || '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div>
+                  <h5 className="text-xs font-extrabold text-slate-700 mb-2">동의 사항</h5>
+                  <ol className="space-y-2 text-[11px] text-slate-600 leading-relaxed list-decimal list-inside bg-slate-50 rounded-xl p-4 border border-slate-100">
+                    {AGREEMENT_TERMS.map((term, idx) => (
+                      <li key={idx} className="pl-1">{term}</li>
+                    ))}
+                  </ol>
+                </div>
+
+                {isPending ? (
+                  <div className="space-y-3">
+                    <label className="flex items-start gap-2.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={agreeChecked}
+                        onChange={(e) => setAgreeChecked(e.target.checked)}
+                        className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span className="text-[11px] text-slate-700 font-medium leading-relaxed">
+                        위 동의 사항을 모두 확인하였으며, 샘플 대여·반납 규정을 준수할 것에 동의합니다. (전자서명)
+                      </span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => handleSignAgreement(agreement)}
+                      disabled={!agreeChecked || isSigning}
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      {isSigning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <PenLine className="w-4 h-4" />}
+                      전자서명 및 대여 처리
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 text-emerald-800 rounded-xl px-4 py-3 text-sm font-bold">
+                    <CheckCircle2 className="w-5 h-5 shrink-0" />
+                    전자서명 완료 · {agreement.signedBy} · {agreement.signedAt}
+                  </div>
+                )}
+              </div>
+
+              <div className="px-5 py-4 border-t border-slate-100 bg-slate-50 flex flex-wrap justify-end gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 px-3.5 py-2 rounded-lg cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  인쇄
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 px-3.5 py-2 rounded-lg cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  PDF 다운로드
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setViewAgreement(null); setAgreeChecked(false); }}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 px-4 py-2 rounded-lg cursor-pointer"
+                >
+                  닫기
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
