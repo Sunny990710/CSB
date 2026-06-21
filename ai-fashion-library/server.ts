@@ -626,6 +626,54 @@ app.post('/api/rental-agreements/:id/sign', async (req, res) => {
   });
 });
 
+// Rental agreement — user self-service: sign + approve + borrow in one step
+app.post('/api/rental-agreements/:id/complete', async (req, res) => {
+  const db = await getDB();
+  if (!db.rentalAgreements) db.rentalAgreements = [];
+
+  const agreement = db.rentalAgreements.find((a: any) => a.agreementId === req.params.id);
+  if (!agreement) return res.status(404).json({ success: false, message: '동의서를 찾을 수 없습니다.' });
+  if (agreement.approvalStatus === 'approved') {
+    return res.status(400).json({ success: false, message: '이미 대여 완료된 동의서입니다.' });
+  }
+
+  const member = db.members.find((m: any) => m.memberId === agreement.borrowerId);
+  if (!member) return res.status(404).json({ success: false, message: '대여자 정보를 찾을 수 없습니다.' });
+
+  agreement.signatureStatus = 'signed';
+  agreement.signedAt = formatDateOnly(new Date());
+  agreement.signedBy = req.body?.signedBy || member.name;
+
+  const newRentals: any[] = [];
+  for (const item of agreement.items) {
+    const sample = db.samples.find((s: any) => s.code === item.sampleCode);
+    if (!sample) {
+      return res.status(404).json({ success: false, message: `샘플을 찾을 수 없습니다 · ${item.sampleCode}` });
+    }
+    if (sample.status !== '대여가능') {
+      return res.status(400).json({
+        success: false,
+        message: `${item.sampleCode}는 현재 대여 가능한 상태가 아닙니다.`,
+      });
+    }
+    const rental = createRentalRecord(db, sample, member, agreement.rentDays);
+    rental.agreementId = agreement.agreementId;
+    newRentals.push(rental);
+  }
+
+  agreement.approvalStatus = 'approved';
+  agreement.approvedAt = formatDateOnly(new Date());
+  agreement.approvedBy = member.name;
+
+  await saveDB(db);
+  res.json({
+    success: true,
+    agreement,
+    rentals: newRentals,
+    message: `${newRentals.length}건 대여가 완료되었습니다.`,
+  });
+});
+
 // Rental agreement — admin approval & batch borrow
 app.post('/api/rental-agreements/:id/approve', async (req, res) => {
   const db = await getDB();
@@ -1070,7 +1118,10 @@ async function startServer() {
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: { port: 24678, clientPort: 24678 },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1082,8 +1133,18 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running at http://0.0.0.0:${PORT} (${isProd ? 'production' : 'development'})`);
+  });
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n❌ 포트 ${PORT}이(가) 이미 사용 중입니다.`);
+      console.error(`   Windows: netstat -ano | findstr :${PORT}  →  taskkill /PID <pid> /F`);
+      console.error(`   또는 .env 에 PORT=3002 등 다른 포트를 지정하세요.\n`);
+    } else {
+      console.error('Server listen error:', err);
+    }
+    process.exit(1);
   });
 }
 
@@ -1091,7 +1152,10 @@ async function startServer() {
 // startServer()는 vite dev 미들웨어/정적 서빙을 포함하므로 일반 Node 실행에서만 호출한다.
 // 정적 파일 서빙은 vercel.json 라우팅이 담당한다.
 if (!process.env.VERCEL) {
-  startServer();
+  startServer().catch((err) => {
+    console.error('Failed to start admin server:', err);
+    process.exit(1);
+  });
 }
 
 export default app;

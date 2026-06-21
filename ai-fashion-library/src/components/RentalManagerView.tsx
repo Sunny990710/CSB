@@ -21,7 +21,7 @@ interface RentalManagerViewProps {
   onRefreshData?: () => void | Promise<void>;
 }
 
-type StatusTab = 'pending' | 'available' | 'active' | 'overdue' | 'bupyeong' | 'lost';
+type StatusTab = 'all' | 'available' | 'active' | 'overdue' | 'bupyeong' | 'lost';
 type PendingSubTab = 'waiting' | 'approved' | 'rejected';
 
 type PendingRow = {
@@ -30,7 +30,22 @@ type PendingRow = {
   item: RentalAgreementItem;
 };
 
-const RENTAL_STATUS_TAB_CHIPS: { id: Exclude<StatusTab, 'pending'>; label: string; active: string; idle: string }[] = [
+type AllStatusRow = {
+  rowKey: string;
+  sampleCode: string;
+  sampleName: string;
+  category: string;
+  brand: string;
+  borrowerName?: string;
+  borrowerGroup?: string;
+  primaryDate: string;
+  secondaryDate?: string;
+  statusLabel: string;
+  statusBadgeClass: string;
+  rental?: Rental;
+};
+
+const RENTAL_STATUS_TAB_CHIPS: { id: Exclude<StatusTab, 'all'>; label: string; active: string; idle: string }[] = [
   { id: 'available', label: '대여가능', active: 'bg-emerald-600 text-white', idle: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
   { id: 'active', label: '대여 중', active: 'bg-blue-600 text-white', idle: 'bg-blue-50 text-blue-700 hover:bg-blue-100' },
   { id: 'overdue', label: '연체', active: 'bg-rose-600 text-white', idle: 'bg-rose-50 text-rose-700 hover:bg-rose-100' },
@@ -98,11 +113,13 @@ const formatDDay = (daysLeft: number) => {
   return `D-${daysLeft}`;
 };
 
+const formatOverdueDDay = (daysOverdue: number) => `D+${daysOverdue}`;
+
 const renderDueSubLabel = (rental: Rental, today: string) => {
   const effective = effectiveRentalStatus(rental, today);
   if (effective === '연체중') {
     const od = overdueDaysOfRental(rental, today);
-    return <span className="text-[10px] text-rose-600 font-bold mt-0.5 block">+{od}일 연체</span>;
+    return <span className="text-[10px] text-rose-600 font-bold mt-0.5 block">{formatOverdueDDay(od)}</span>;
   }
   const left = daysUntilDueOf(rental.dueDate, today);
   return <span className="text-[10px] text-slate-400 font-medium mt-0.5 block">{formatDDay(left)}</span>;
@@ -123,7 +140,7 @@ export default function RentalManagerView({
   categories = [],
   onRefreshData,
 }: RentalManagerViewProps) {
-  const [statusTab, setStatusTab] = useState<StatusTab>('pending');
+  const [statusTab, setStatusTab] = useState<StatusTab>('all');
   const [pendingSubTab, setPendingSubTab] = useState<PendingSubTab>('waiting');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('전체');
@@ -176,10 +193,10 @@ export default function RentalManagerView({
   const getRegDateKey = (dateStr?: string) => (dateStr || '').substring(0, 10);
   const regDateFilterLabel =
     !regDateFrom && !regDateTo
-      ? '등록일: 전체'
+      ? '일자: 전체'
       : regDateFrom && regDateTo && regDateFrom === regDateTo
-        ? `등록일: ${regDateFrom}`
-        : `등록일: ${regDateFrom || '…'} ~ ${regDateTo || '…'}`;
+        ? `일자: ${regDateFrom}`
+        : `일자: ${regDateFrom || '…'} ~ ${regDateTo || '…'}`;
 
   const CATEGORY_ORDER = ['오리지널', '유형화샘플', 'EP샘플', '자사샘플', '중국샘플'];
   const sortByCategoryOrder = (arr: string[]) =>
@@ -208,7 +225,7 @@ export default function RentalManagerView({
 
   const matchesDetailFilters = (
     sampleCode: string,
-    opts?: { brand?: string; itemCategory?: string; dateFallback?: string }
+    opts?: { brand?: string; itemCategory?: string; dateFallback?: string; borrowerName?: string }
   ) => {
     const s = sampleOf(sampleCode);
     const brand = s?.brand || opts?.brand || '';
@@ -218,7 +235,7 @@ export default function RentalManagerView({
     if (selectedBrand !== '전체' && brand !== selectedBrand) return false;
     if (selectedCountry !== '전체' && sampleCountryOf(s) !== selectedCountry) return false;
     if (selectedCategory !== '전체' && category !== selectedCategory) return false;
-    if (selectedRegisterer !== '전체' && (s?.registerer || '') !== selectedRegisterer) return false;
+    if (selectedRegisterer !== '전체' && (opts?.borrowerName || '') !== selectedRegisterer) return false;
     if (regDateFrom && (!sampleDate || sampleDate < regDateFrom)) return false;
     if (regDateTo && (!sampleDate || sampleDate > regDateTo)) return false;
     return true;
@@ -236,8 +253,8 @@ export default function RentalManagerView({
     [relatedSamples]
   );
   const uniqueRegisterers = useMemo(
-    () => ['전체', ...Array.from(new Set(relatedSamples.map((s) => s.registerer).filter(Boolean))).sort()],
-    [relatedSamples]
+    () => ['전체', ...Array.from(new Set(rentals.map((r) => r.borrowerName).filter(Boolean))).sort()],
+    [rentals]
   );
 
   const filterAgreementsBySearch = (agreements: RentalAgreement[]) =>
@@ -315,6 +332,7 @@ export default function RentalManagerView({
             brand: item.brand,
             itemCategory: item.category,
             dateFallback: agreement.createdAt || agreement.rentDate,
+            borrowerName: agreement.borrowerName,
           })
         )
         .map((item) => ({
@@ -328,14 +346,14 @@ export default function RentalManagerView({
   const approvedPendingRows = buildPendingRows(baseApprovedAgreements);
   const rejectedPendingRows = buildPendingRows(baseRejectedAgreements);
 
-  const selectRentalStatusTab = (tab: Exclude<StatusTab, 'pending'>) => {
+  const selectRentalStatusTab = (tab: Exclude<StatusTab, 'all'>) => {
     setStatusTab(tab);
     setSelectedRowKeys(new Set());
     setCurrentPage(1);
   };
 
   const selectAllRentalStatus = () => {
-    setStatusTab('pending');
+    setStatusTab('all');
     setSelectedRowKeys(new Set());
     setCurrentPage(1);
   };
@@ -369,11 +387,11 @@ export default function RentalManagerView({
     tabCounts.available + tabCounts.active + tabCounts.overdue + tabCounts.bupyeong + tabCounts.lost;
 
   const activeRentals = baseActiveRentals.filter((r) =>
-    matchesDetailFilters(r.sampleCode, { brand: r.sampleBrand, dateFallback: r.rentDate })
+    matchesDetailFilters(r.sampleCode, { brand: r.sampleBrand, dateFallback: r.rentDate, borrowerName: r.borrowerName })
   );
 
   const overdueRentals = baseOverdueRentals.filter((r) =>
-    matchesDetailFilters(r.sampleCode, { brand: r.sampleBrand, dateFallback: r.rentDate })
+    matchesDetailFilters(r.sampleCode, { brand: r.sampleBrand, dateFallback: r.rentDate, borrowerName: r.borrowerName })
   );
 
   const availableSamples = baseAvailableSamples.filter((s) =>
@@ -384,13 +402,104 @@ export default function RentalManagerView({
     matchesDetailFilters(s.code, { brand: s.brand, dateFallback: s.regDate })
   );
 
-  const lostSamples = baseLostSamples.filter((s) =>
-    matchesDetailFilters(s.code, { brand: s.brand, dateFallback: s.regDate })
-  );
+  const lostSamples = baseLostSamples.filter((s) => {
+    const last = lastRentalOfSample(s.code);
+    return matchesDetailFilters(s.code, {
+      brand: s.brand,
+      dateFallback: last?.rentDate || s.regDate,
+      borrowerName: last?.borrowerName,
+    });
+  });
+
+  const allStatusRows = useMemo((): AllStatusRow[] => {
+    const rows: AllStatusRow[] = [];
+
+    availableSamples.forEach((s) => {
+      rows.push({
+        rowKey: `available:${s.code}`,
+        sampleCode: s.code,
+        sampleName: s.name,
+        category: s.category || '-',
+        brand: s.brand,
+        primaryDate: getRegDateKey(s.regDate) || '-',
+        statusLabel: '대여가능',
+        statusBadgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+      });
+    });
+
+    activeRentals.forEach((r) => {
+      const sample = sampleOf(r.sampleCode);
+      rows.push({
+        rowKey: `active:${r.rentalId}`,
+        sampleCode: r.sampleCode,
+        sampleName: r.sampleName,
+        category: sample?.category || '-',
+        brand: r.sampleBrand,
+        borrowerName: r.borrowerName,
+        borrowerGroup: r.borrowerGroup,
+        primaryDate: r.rentDate,
+        secondaryDate: r.dueDate,
+        statusLabel: rentalStatusLabel(effectiveRentalStatus(r, today)),
+        statusBadgeClass: 'bg-blue-50 text-blue-700 border-blue-100',
+        rental: r,
+      });
+    });
+
+    overdueRentals.forEach((r) => {
+      const sample = sampleOf(r.sampleCode);
+      rows.push({
+        rowKey: `overdue:${r.rentalId}`,
+        sampleCode: r.sampleCode,
+        sampleName: r.sampleName,
+        category: sample?.category || '-',
+        brand: r.sampleBrand,
+        borrowerName: r.borrowerName,
+        borrowerGroup: r.borrowerGroup,
+        primaryDate: r.rentDate,
+        secondaryDate: r.dueDate,
+        statusLabel: '연체',
+        statusBadgeClass: 'bg-rose-50 text-rose-700 border-rose-100',
+        rental: r,
+      });
+    });
+
+    bupyeongSamples.forEach((s) => {
+      rows.push({
+        rowKey: `bupyeong:${s.code}`,
+        sampleCode: s.code,
+        sampleName: s.name,
+        category: s.category || '-',
+        brand: s.brand,
+        primaryDate: getRegDateKey(s.regDate) || '-',
+        statusLabel: '부평보관',
+        statusBadgeClass: 'bg-amber-50 text-amber-700 border-amber-100',
+      });
+    });
+
+    lostSamples.forEach((s) => {
+      const last = lastRentalOfSample(s.code);
+      rows.push({
+        rowKey: `lost:${s.code}`,
+        sampleCode: s.code,
+        sampleName: s.name,
+        category: s.category || '-',
+        brand: s.brand,
+        borrowerName: last?.borrowerName,
+        borrowerGroup: last?.borrowerGroup,
+        primaryDate: last?.rentDate || getRegDateKey(s.regDate) || '-',
+        secondaryDate: last?.returnDate || undefined,
+        statusLabel: '분실',
+        statusBadgeClass: 'bg-slate-100 text-slate-700 border-slate-200',
+        rental: last,
+      });
+    });
+
+    return rows;
+  }, [availableSamples, activeRentals, overdueRentals, bupyeongSamples, lostSamples, today]);
 
   const currentListCount =
-    statusTab === 'pending'
-      ? pendingRows.length
+    statusTab === 'all'
+      ? allStatusRows.length
       : statusTab === 'available'
         ? availableSamples.length
         : statusTab === 'active'
@@ -403,6 +512,7 @@ export default function RentalManagerView({
 
   const totalPages = Math.max(1, Math.ceil(currentListCount / pageSize));
   const safePage = Math.min(currentPage, totalPages);
+  const pagedAllStatusRows = allStatusRows.slice((safePage - 1) * pageSize, safePage * pageSize);
   const pagedPendingRows = pendingRows.slice((safePage - 1) * pageSize, safePage * pageSize);
   const pagedActiveRentals = activeRentals.slice((safePage - 1) * pageSize, safePage * pageSize);
   const pagedOverdueRentals = overdueRentals.slice((safePage - 1) * pageSize, safePage * pageSize);
@@ -447,45 +557,18 @@ export default function RentalManagerView({
     let headers: string[] = [];
     let rows: string[][] = [];
 
-    if (statusTab === 'pending') {
-      if (pendingSubTab === 'rejected') {
-        headers = ['상품코드', '상품명', '브랜드', '대여자', '신청일', '대여기간', '반려일', '반려사유'];
-        rows = pendingRows.map(({ agreement, item }) => [
-          item.sampleCode,
-          item.sampleName,
-          item.brand || agreement.brand,
-          agreement.borrowerName,
-          agreement.createdAt || agreement.rentDate,
-          rentPeriodLabel(agreement.rentDays),
-          agreement.rejectedAt || '-',
-          agreement.rejectedReason || '-',
-        ]);
-      } else if (pendingSubTab === 'approved') {
-        headers = ['상품코드', '상품명', '브랜드', '대여자', '신청일', '대여기간', '서명', '승인일', '승인자'];
-        rows = pendingRows.map(({ agreement, item }) => [
-          item.sampleCode,
-          item.sampleName,
-          item.brand || agreement.brand,
-          agreement.borrowerName,
-          agreement.createdAt || agreement.rentDate,
-          rentPeriodLabel(agreement.rentDays),
-          agreement.signatureStatus === 'signed' ? '서명완료' : '서명대기',
-          agreement.approvedAt || '-',
-          agreement.approvedBy || '-',
-        ]);
-      } else {
-        headers = ['상품코드', '상품명', '브랜드', '대여자', '신청일', '대여기간', '서명', '처리상태'];
-        rows = pendingRows.map(({ agreement, item }) => [
-          item.sampleCode,
-          item.sampleName,
-          item.brand || agreement.brand,
-          agreement.borrowerName,
-          agreement.createdAt || agreement.rentDate,
-          rentPeriodLabel(agreement.rentDays),
-          agreement.signatureStatus === 'signed' ? '서명완료' : '서명대기',
-          agreement.signatureStatus === 'signed' ? '승인·반려 대기' : '서명 대기',
-        ]);
-      }
+    if (statusTab === 'all') {
+      headers = ['상품코드', '상품명', '카테고리', '브랜드', '대여자', '일자', '반납예정', '상태'];
+      rows = allStatusRows.map((row) => [
+        row.sampleCode,
+        row.sampleName,
+        row.category,
+        row.brand,
+        row.borrowerName || '-',
+        row.primaryDate,
+        row.secondaryDate || '-',
+        row.statusLabel,
+      ]);
     } else if (statusTab === 'active') {
       headers = ['대여번호', '상품코드', '상품명', '브랜드', '대여자', '대여일', '반납예정', '상태'];
       rows = activeRentals.map((r) => [
@@ -535,7 +618,7 @@ export default function RentalManagerView({
         r.borrowerName,
         r.rentDate,
         r.dueDate,
-        `${overdueDaysOfRental(r, today)}일`,
+        formatOverdueDDay(overdueDaysOfRental(r, today)),
       ]);
     }
 
@@ -549,17 +632,14 @@ export default function RentalManagerView({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download =
-      statusTab === 'pending'
-        ? `대여반납_${statusTab}_${pendingSubTab}_${today}.csv`
-        : `대여반납_${statusTab}_${today}.csv`;
+    a.download = statusTab === 'all' ? `대여반납_전체_${today}.csv` : `대여반납_${statusTab}_${today}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   const currentRowKeys =
-    statusTab === 'pending'
-      ? pendingRows.map((r) => r.rowKey)
+    statusTab === 'all'
+      ? allStatusRows.map((r) => r.rowKey)
       : statusTab === 'available'
         ? availableSamples.map((s) => s.code)
         : statusTab === 'active'
@@ -1177,6 +1257,57 @@ export default function RentalManagerView({
     </div>
   );
 
+  const renderPagination = () => {
+    if (currentListCount === 0) return null;
+    return (
+      <div
+        className="flex flex-col sm:flex-row items-center justify-between gap-3 px-1"
+        id="rental-status-pagination"
+      >
+        <span className="text-[11px] text-slate-400 font-medium font-mono">
+          {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, currentListCount)} / 총 {currentListCount}개
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setCurrentPage(1)}
+            disabled={safePage === 1}
+            className="px-2 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          >
+            « 처음
+          </button>
+          <button
+            type="button"
+            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+            disabled={safePage === 1}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          >
+            이전
+          </button>
+          <span className="px-2 text-xs font-bold text-slate-700 font-mono">
+            {safePage} / {totalPages}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+            disabled={safePage === totalPages}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          >
+            다음
+          </button>
+          <button
+            type="button"
+            onClick={() => setCurrentPage(totalPages)}
+            disabled={safePage === totalPages}
+            className="px-2 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          >
+            끝 »
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4" id="rental-manager-root">
       {feedback && (
@@ -1324,7 +1455,7 @@ export default function RentalManagerView({
                 >
                   {uniqueRegisterers.map((r) => (
                     <option key={r} value={r}>
-                      {r === '전체' ? '등록자: 전체' : r}
+                      {r === '전체' ? '대여자: 전체' : r}
                     </option>
                   ))}
                 </select>
@@ -1336,21 +1467,6 @@ export default function RentalManagerView({
               <span className="text-[11px] text-slate-400 font-extrabold font-mono uppercase tracking-wide whitespace-nowrap">
                 목록 {currentListCount.toLocaleString()}건
               </span>
-              {statusTab === 'pending' && pendingSubTab === 'waiting' && (
-                <button
-                  type="button"
-                  onClick={() => void handleBulkApprove()}
-                  disabled={bulkApproving || selectedApprovableCount === 0}
-                  className="flex items-center gap-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white py-1.5 px-3 rounded-lg text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shadow-3xs"
-                >
-                  {bulkApproving ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                  )}
-                  일괄 승인{selectedApprovableCount > 0 ? ` (${selectedApprovableCount})` : ''}
-                </button>
-              )}
               <button
                 type="button"
                 onClick={handleExcelDownload}
@@ -1382,7 +1498,7 @@ export default function RentalManagerView({
                 type="button"
                 onClick={selectAllRentalStatus}
                 className={`text-[11px] font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
-                  statusTab === 'pending'
+                  statusTab === 'all'
                     ? 'bg-black text-white'
                     : 'bg-black/85 text-white hover:bg-black'
                 }`}
@@ -1411,11 +1527,12 @@ export default function RentalManagerView({
         </div>
       </div>
 
+      <div className="space-y-4" id="rental-status-list-wrap">
       <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden" id="rentals-status-root">
-        {/* 승인 대기 */}
-        {statusTab === 'pending' && (
-          <div className="overflow-x-auto" id="rental-pending-table-wrap">
-            <table className="w-full text-left border-collapse" id="rental-pending-table">
+        {/* 전체 — 모든 상태 통합 목록 */}
+        {statusTab === 'all' && (
+          <div className="overflow-x-auto" id="rental-all-table-wrap">
+            <table className="w-full text-left border-collapse" id="rental-all-table">
               <thead>
                 <tr className={TABLE_HEAD}>
                   <th className="py-3 px-3 text-center w-10">
@@ -1434,121 +1551,82 @@ export default function RentalManagerView({
                   <th className="py-3 px-2.5 whitespace-nowrap">카테고리</th>
                   <th className="py-3 px-2.5 whitespace-nowrap">브랜드</th>
                   <th className="py-3 px-2.5 whitespace-nowrap">대여자</th>
-                  <th className="py-3 px-2.5 whitespace-nowrap">신청일</th>
-                  <th className="py-3 px-2.5 whitespace-nowrap">대여기간</th>
-                  {pendingSubTab === 'rejected' ? (
-                    <>
-                      <th className="py-3 px-2.5 whitespace-nowrap">반려일</th>
-                      <th className="py-3 px-2.5 whitespace-nowrap">반려사유</th>
-                      <th className="py-3 px-2.5 whitespace-nowrap">동작</th>
-                    </>
-                  ) : (
-                    <>
-                      <th className="py-3 px-2.5 whitespace-nowrap">서명</th>
-                      <th className="py-3 px-2.5 whitespace-nowrap">동의서</th>
-                      {pendingSubTab === 'approved' ? (
-                        <>
-                          <th className="py-3 px-2.5 whitespace-nowrap">승인일</th>
-                          <th className="py-3 px-2.5 whitespace-nowrap">승인자</th>
-                        </>
-                      ) : (
-                        <th className="py-3 px-2.5 whitespace-nowrap">동작</th>
-                      )}
-                    </>
-                  )}
+                  <th className="py-3 px-2.5 whitespace-nowrap">일자</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">반납예정</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">상태</th>
+                  <th className="py-3 px-2.5 whitespace-nowrap">동의서</th>
                 </tr>
               </thead>
               <tbody className={TABLE_BODY}>
-                {pendingRows.length === 0 ? (
+                {allStatusRows.length === 0 ? (
                   <tr>
-                    <td colSpan={pendingTableColSpan} className="py-20 text-center text-slate-400">
-                      {pendingEmptyMessage}
+                    <td colSpan={12} className="py-20 text-center text-slate-400">
+                      표시할 샘플이 없습니다.
                     </td>
                   </tr>
                 ) : (
-                  pagedPendingRows.map((row, index) => {
-                    const { agreement, item, rowKey } = row;
-                    const group = borrowerGroupLabel(agreement, members);
-                    const sample = sampleOf(item.sampleCode);
+                  pagedAllStatusRows.map((row, index) => {
                     const rowNo = (safePage - 1) * pageSize + index + 1;
                     return (
                       <tr
-                        key={rowKey}
-                        className={`hover:bg-slate-50/70 transition-colors ${selectedRowKeys.has(rowKey) ? 'bg-violet-50/40' : ''}`}
-                        id={`pending-row-${rowKey}`}
+                        key={row.rowKey}
+                        className={`hover:bg-slate-50/70 transition-colors ${selectedRowKeys.has(row.rowKey) ? 'bg-violet-50/40' : ''}`}
                       >
                         <td className="py-3.5 px-3 text-center">
                           <input
                             type="checkbox"
-                            checked={selectedRowKeys.has(rowKey)}
-                            onChange={() => toggleSelectRow(rowKey)}
+                            checked={selectedRowKeys.has(row.rowKey)}
+                            onChange={() => toggleSelectRow(row.rowKey)}
                             className="w-3.5 h-3.5 text-violet-650 border-slate-300 rounded-sm focus:ring-violet-500 cursor-pointer align-middle"
                           />
                         </td>
                         <td className="py-3.5 pl-2.5 pr-1 font-mono text-slate-400 text-[11px]">{rowNo}</td>
-                        <td className="py-3.5 px-2.5 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">{item.sampleCode}</td>
-                        <td className="py-3.5 px-2.5">{renderSampleImage(item.sampleCode, item.sampleName)}</td>
+                        <td className="py-3.5 px-2.5 font-mono font-bold text-indigo-650 text-[11px] whitespace-nowrap">{row.sampleCode}</td>
+                        <td className="py-3.5 px-2.5">{renderSampleImage(row.sampleCode, row.sampleName)}</td>
                         <td className="py-3.5 px-2.5">
-                          <div className="font-semibold text-slate-800 max-w-[190px] truncate" title={item.sampleName}>
-                            {item.sampleName}
+                          <div className="font-semibold text-slate-800 max-w-[190px] truncate" title={row.sampleName}>
+                            {row.sampleName}
                           </div>
                         </td>
                         <td className="py-3.5 px-2.5">
                           <span className="text-xs text-slate-600 bg-slate-100 py-0.5 px-2 rounded-md font-medium">
-                            {item.category || sample?.category || '-'}
+                            {row.category}
                           </span>
                         </td>
-                        <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">{item.brand || agreement.brand}</td>
+                        <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">{row.brand}</td>
                         <td className="py-3.5 px-2.5 whitespace-nowrap">
-                          <div className="font-bold text-slate-800">{agreement.borrowerName}</div>
-                          <div className="text-[10px] text-slate-400 font-medium mt-0.5">{group}</div>
-                        </td>
-                        <td className="py-3.5 px-2.5 font-mono text-slate-400 text-[11px] whitespace-nowrap">
-                          {agreement.createdAt || agreement.rentDate}
-                        </td>
-                        <td className="py-3.5 px-2.5 font-bold text-slate-700 whitespace-nowrap">
-                          {rentPeriodLabel(agreement.rentDays)}
-                        </td>
-                        {pendingSubTab === 'rejected' ? (
-                          <>
-                            <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">
-                              {agreement.rejectedAt || '-'}
-                            </td>
-                            <td className="py-3.5 px-2.5 text-slate-700 text-[11px] max-w-[220px]">
-                              <div className="truncate font-medium" title={agreement.rejectedReason || undefined}>
-                                {agreement.rejectedReason || '-'}
-                              </div>
-                            </td>
-                            <td className="py-3.5 px-2.5">{renderPendingActions(agreement)}</td>
-                          </>
-                        ) : (
-                          <>
-                            <td className="py-3.5 px-2.5">
-                              {agreement.signatureStatus === 'signed' ? (
-                                <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-100">
-                                  서명완료
-                                </span>
-                              ) : (
-                                <span className="text-[11px] font-bold py-1 px-2.5 rounded-full border bg-amber-50 text-amber-700 border-amber-100">
-                                  서명대기
-                                </span>
+                          {row.borrowerName ? (
+                            <>
+                              <div className="font-bold text-slate-800">{row.borrowerName}</div>
+                              {row.borrowerGroup && (
+                                <div className="text-[10px] text-slate-400 font-medium mt-0.5">{row.borrowerGroup}</div>
                               )}
-                            </td>
-                            <td className="py-3.5 px-2.5">{renderPendingAgreementCell(agreement)}</td>
-                            {pendingSubTab === 'approved' ? (
-                              <>
-                                <td className="py-3.5 px-2.5 font-mono text-slate-500 text-[11px] whitespace-nowrap">
-                                  {agreement.approvedAt || '-'}
-                                </td>
-                                <td className="py-3.5 px-2.5 font-semibold text-slate-700 whitespace-nowrap">
-                                  {agreement.approvedBy || '-'}
-                                </td>
-                              </>
-                            ) : (
-                              <td className="py-3.5 px-2.5">{renderPendingActions(agreement)}</td>
-                            )}
-                          </>
-                        )}
+                            </>
+                          ) : (
+                            <span className="text-slate-300">-</span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-2.5 font-mono text-slate-400 text-[11px] whitespace-nowrap">{row.primaryDate}</td>
+                        <td className="py-3.5 px-2.5 font-mono text-[11px] whitespace-nowrap">
+                          {row.secondaryDate ? (
+                            <>
+                              <span className={row.statusLabel === '연체' ? 'text-rose-600 font-bold' : 'text-slate-600'}>
+                                {row.secondaryDate}
+                              </span>
+                              {row.rental && renderDueSubLabel(row.rental, today)}
+                            </>
+                          ) : (
+                            <span className="text-slate-300">-</span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-2.5">
+                          <span className={`text-[11px] font-bold py-1 px-2.5 rounded-full border ${row.statusBadgeClass}`}>
+                            {row.statusLabel}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-2.5">
+                          {row.rental ? renderAgreementCell(row.rental) : <span className="text-slate-300 text-[11px]">-</span>}
+                        </td>
                       </tr>
                     );
                   })
@@ -1854,6 +1932,8 @@ export default function RentalManagerView({
             </table>
           </div>
         )}
+      </div>
+      {renderPagination()}
       </div>
       </>
       )}

@@ -1274,7 +1274,7 @@ export default function DashboardView({
                           <span className="text-slate-300">•</span>
                           <span className="text-rose-600 font-extrabold flex items-center gap-0.5 bg-rose-50 px-2 py-0.5 rounded text-[11px]">
                             <AlertTriangle className="w-3 h-3 block" />
-                            {diffDays}일차 연체!
+                            D+{diffDays}
                           </span>
                         </div>
                       </div>

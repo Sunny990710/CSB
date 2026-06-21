@@ -166,10 +166,10 @@ export default function RentalDocumentBox({
   const getRegDateKey = (dateStr?: string) => (dateStr || '').substring(0, 10);
   const regDateFilterLabel =
     !regDateFrom && !regDateTo
-      ? '등록일: 전체'
+      ? '대여일: 전체'
       : regDateFrom && regDateTo && regDateFrom === regDateTo
-        ? `등록일: ${regDateFrom}`
-        : `등록일: ${regDateFrom || '…'} ~ ${regDateTo || '…'}`;
+        ? `대여일: ${regDateFrom}`
+        : `대여일: ${regDateFrom || '…'} ~ ${regDateTo || '…'}`;
 
   const sortByCategoryOrder = (arr: string[]) =>
     [...arr].sort((a, b) => {
@@ -207,24 +207,30 @@ export default function RentalDocumentBox({
     () => ['전체', ...Array.from(new Set(relatedSamples.map((s) => s.brand).filter(Boolean))).sort()],
     [relatedSamples]
   );
-  const uniqueRegisterers = useMemo(
-    () => ['전체', ...Array.from(new Set(relatedSamples.map((s) => s.registerer).filter(Boolean))).sort()],
-    [relatedSamples]
-  );
+  const uniqueRegisterers = useMemo(() => {
+    const names = new Set<string>();
+    rentalAgreements.forEach((a) => {
+      if (a.borrowerName) names.add(a.borrowerName);
+    });
+    lossDamageReports.forEach((r) => {
+      if (r.employeeName) names.add(r.employeeName);
+    });
+    return ['전체', ...Array.from(names).sort()];
+  }, [rentalAgreements, lossDamageReports]);
 
   const matchesDetailFilters = (
     sampleCode: string,
-    opts?: { brand?: string; itemCategory?: string; dateFallback?: string }
+    opts?: { brand?: string; itemCategory?: string; dateFallback?: string; borrowerName?: string }
   ) => {
     const s = sampleOf(sampleCode);
     const brand = s?.brand || opts?.brand || '';
-    const sampleDate = getRegDateKey(s?.regDate || opts?.dateFallback);
+    const sampleDate = getRegDateKey(opts?.dateFallback || s?.regDate);
     const category = sampleCategoryOf(s, opts?.itemCategory);
 
     if (selectedBrand !== '전체' && brand !== selectedBrand) return false;
     if (selectedCountry !== '전체' && sampleCountryOf(s) !== selectedCountry) return false;
     if (selectedCategory !== '전체' && category !== selectedCategory) return false;
-    if (selectedRegisterer !== '전체' && (s?.registerer || '') !== selectedRegisterer) return false;
+    if (selectedRegisterer !== '전체' && (opts?.borrowerName || '') !== selectedRegisterer) return false;
     if (regDateFrom && (!sampleDate || sampleDate < regDateFrom)) return false;
     if (regDateTo && (!sampleDate || sampleDate > regDateTo)) return false;
     return true;
@@ -252,9 +258,11 @@ export default function RentalDocumentBox({
               brand: a.brand,
               itemCategory: first.category,
               dateFallback: a.rentDate || a.createdAt,
+              borrowerName: a.borrowerName,
             });
           }
           if (selectedBrand !== '전체' && a.brand !== selectedBrand) return false;
+          if (selectedRegisterer !== '전체' && a.borrowerName !== selectedRegisterer) return false;
           const docDate = getRegDateKey(a.rentDate || a.createdAt);
           if (regDateFrom && docDate < regDateFrom) return false;
           if (regDateTo && docDate > regDateTo) return false;
@@ -293,7 +301,8 @@ export default function RentalDocumentBox({
         .filter((r) =>
           matchesDetailFilters(r.sampleCode, {
             brand: r.brand,
-            dateFallback: r.processedDate || r.createdAt,
+            dateFallback: r.rentalDate || r.processedDate || r.createdAt,
+            borrowerName: r.employeeName,
           })
         )
         .sort((a, b) => (b.createdAt || b.processedDate).localeCompare(a.createdAt || a.processedDate)),
@@ -414,6 +423,57 @@ export default function RentalDocumentBox({
     a.download = `문서함_${folderName}_${today}.zip`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const renderPagination = () => {
+    if (currentListCount === 0) return null;
+    return (
+      <div
+        className="flex flex-col sm:flex-row items-center justify-between gap-3 px-1"
+        id="rental-doc-pagination"
+      >
+        <span className="text-[11px] text-slate-400 font-medium font-mono">
+          {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, currentListCount)} / 총 {currentListCount}개
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setCurrentPage(1)}
+            disabled={safePage === 1}
+            className="px-2 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          >
+            « 처음
+          </button>
+          <button
+            type="button"
+            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+            disabled={safePage === 1}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          >
+            이전
+          </button>
+          <span className="px-2 text-xs font-bold text-slate-700 font-mono">
+            {safePage} / {totalPages}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+            disabled={safePage === totalPages}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          >
+            다음
+          </button>
+          <button
+            type="button"
+            onClick={() => setCurrentPage(totalPages)}
+            disabled={safePage === totalPages}
+            className="px-2 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          >
+            끝 »
+          </button>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -548,7 +608,7 @@ export default function RentalDocumentBox({
                 >
                   {uniqueRegisterers.map((r) => (
                     <option key={r} value={r}>
-                      {r === '전체' ? '등록자: 전체' : r}
+                      {r === '전체' ? '대여자: 전체' : r}
                     </option>
                   ))}
                 </select>
@@ -620,6 +680,7 @@ export default function RentalDocumentBox({
         </div>
       </div>
 
+      <div className="space-y-4" id="rental-doc-list-wrap">
       <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden" id="rental-doc-content">
         {docTab === 'agreements' && (
           <div className="overflow-x-auto" id="rental-doc-agreements-wrap">
@@ -856,6 +917,8 @@ export default function RentalDocumentBox({
             </p>
           </div>
         )}
+      </div>
+      {docTab !== 'compensation' && renderPagination()}
       </div>
     </div>
   );
