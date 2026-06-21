@@ -13,7 +13,7 @@ export default defineConfig(() => {
     },
     server: {
       watch: {
-        ignored: ['**/database.json', '**/data/**', '../ai-fashion-library/database.json'],
+        ignored: ['**/database.json', '**/data/**', '../csb-admin/database.json'],
       },
     },
     build: {

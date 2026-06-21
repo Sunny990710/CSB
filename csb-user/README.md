@@ -1,14 +1,14 @@
 # CSB 사용자 포털 (`csb-user`)
 
-`ai-fashion-library`(어드민)와 **같은 층위**에 있는 임직원용 사용자 앱입니다.  
+`csb-admin`(어드민)와 **같은 층위**에 있는 임직원용 사용자 앱입니다.  
 동일한 디자인 토큰·타입·데이터베이스를 공유합니다.
 
 ## 프로젝트 구조
 
 ```
-ai-fashion-library/     ← 워크스페이스 루트
-├── ai-fashion-library/ ← 어드민 (포트 3000)
-└── csb-user/           ← 사용자 (포트 3001)
+CSB/              ← 저장소 루트
+├── csb-admin/    ← 어드민 (포트 3000)
+└── csb-user/     ← 사용자 (포트 3001)
 ```
 
 ## 실행
@@ -22,12 +22,12 @@ npm run dev
 # → http://localhost:3001
 
 # 2) (선택) 어드민도 함께
-cd ../ai-fashion-library
+cd ../csb-admin
 npm run dev
 # → http://localhost:3000
 ```
 
-`csb-user`는 기본적으로 **`../ai-fashion-library/database.json`** 을 읽고 씁니다.  
+`csb-user`는 기본적으로 **`../csb-admin/database.json`** 을 읽고 씁니다.  
 어드민과 사용자가 **같은 대여 데이터**를 공유합니다.
 
 ## 화면
@@ -46,4 +46,4 @@ npm run dev
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `PORT` | `3001` | 사용자 포털 포트 |
-| `DATA_DIR` | `../ai-fashion-library` | 공유 DB 폴더 |
+| `DATA_DIR` | `../csb-admin` | 공유 DB 폴더 |

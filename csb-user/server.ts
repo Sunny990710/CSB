@@ -12,8 +12,8 @@ const isProd = process.env.NODE_ENV === 'production';
 
 app.use(express.json({ limit: '10mb' }));
 
-// ai-fashion-library 와 동일 database.json 공유 (기본: 형제 폴더)
-const DEFAULT_DATA_DIR = path.join(process.cwd(), '..', 'ai-fashion-library');
+// csb-admin 과 동일 database.json 공유 (기본: 형제 폴더)
+const DEFAULT_DATA_DIR = path.join(process.cwd(), '..', 'csb-admin');
 const DATA_DIR = process.env.DATA_DIR || DEFAULT_DATA_DIR;
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 
@@ -27,7 +27,7 @@ try {
 const SEED_CANDIDATES = [
   DB_FILE,
   path.join(process.cwd(), 'database.json'),
-  path.join(MODULE_DIR, '..', 'ai-fashion-library', 'database.json'),
+  path.join(MODULE_DIR, '..', 'csb-admin', 'database.json'),
   path.join(MODULE_DIR, 'database.json'),
 ];
 

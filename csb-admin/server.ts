@@ -33,7 +33,7 @@ const SEED_CANDIDATES = [
   path.join(MODULE_DIR, '..', 'database.json'),
   path.join(MODULE_DIR, '..', '..', 'database.json'),
   '/var/task/database.json',
-  '/var/task/ai-fashion-library/database.json',
+  '/var/task/csb-admin/database.json',
 ];
 
 function findSeedFile(): string | null {
