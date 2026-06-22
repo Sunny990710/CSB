@@ -1,9 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cp ../csb-admin/database.json database.json && vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=api/_server.js",
+  "framework": null,
+  "installCommand": "npm install && npm install --prefix ../csb-admin --ignore-scripts",
+  "buildCommand": "vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=api/_server.js",
   "outputDirectory": "dist/public",
   "functions": {
-    "api/index.js": { "includeFiles": "database.json" }
+    "api/index.js": {
+      "includeFiles": "../csb-admin/database.json"
+    }
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index" },

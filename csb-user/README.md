@@ -53,7 +53,7 @@ npm run dev
 1. Vercel에서 **새 프로젝트**를 만들고 GitHub `CSB` 저장소를 연결합니다.
 2. **Root Directory** → `csb-user`
 3. 어드민(`csb-admin`)과 **같은 Blob 스토어**를 Connect하면 두 앱이 동일 DB를 공유합니다.
-4. `vercel.json`이 빌드 시 `../csb-admin/database.json`을 시드로 복사합니다.
+4. `vercel.json`의 `includeFiles`로 `../csb-admin/database.json`을 서버리스 함수에 포함합니다.
 
 | 항목 | 어드민 | 사용자 |
 | --- | --- | --- |

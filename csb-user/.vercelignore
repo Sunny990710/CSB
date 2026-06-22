@@ -1,0 +1,5 @@
+# csb-user 배포 시 csb-admin 소스는 제외 (database.json은 includeFiles로만 포함)
+../csb-admin/server.ts
+../csb-admin/src
+../csb-admin/api
+../csb-admin/node_modules
