@@ -29,6 +29,11 @@ interface SearchFilterBarProps {
   breadcrumbRootLabel?: string;
   showCategoryNavigation?: boolean;
   catalogSamples?: Sample[];
+  showStatusChips?: boolean;
+  showViewModeToggle?: boolean;
+  pageSize?: number;
+  onPageSizeChange?: (size: number) => void;
+  pageSizeOptions?: number[];
 }
 
 function CategoryBreadcrumb({
@@ -108,6 +113,11 @@ export default function SearchFilterBar({
   breadcrumbRootLabel = '홈',
   showCategoryNavigation = true,
   catalogSamples = [],
+  showStatusChips = true,
+  showViewModeToggle = true,
+  pageSize,
+  onPageSizeChange,
+  pageSizeOptions = [10, 20, 50, 100],
 }: SearchFilterBarProps) {
   const patch = (partial: Partial<SampleFilters>) => onChange({ ...filters, ...partial });
 
@@ -262,6 +272,23 @@ export default function SearchFilterBar({
             <span className="text-[11px] text-slate-400 font-extrabold font-mono uppercase tracking-wide whitespace-nowrap">
               {countLabel}: {resultCount.toLocaleString()}개
             </span>
+            {onPageSizeChange && pageSize != null && (
+              <div className="relative">
+                <select
+                  value={pageSize}
+                  onChange={(e) => onPageSizeChange(Number(e.target.value))}
+                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3 pr-7 py-1.5 text-[11px] font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
+                >
+                  {pageSizeOptions.map((n) => (
+                    <option key={n} value={n}>
+                      {n}개씩
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
+              </div>
+            )}
+            {showViewModeToggle && (
             <div className="flex border border-slate-200/85 rounded-lg p-0.5 bg-slate-50 gap-0.5">
               <button
                 type="button"
@@ -284,6 +311,7 @@ export default function SearchFilterBar({
                 <List className="w-3.5 h-3.5" />
               </button>
             </div>
+            )}
           </div>
         </div>
 
@@ -321,6 +349,7 @@ export default function SearchFilterBar({
           />
         )}
 
+        {showStatusChips && (
         <StatusChipBar
           options={STATUS_CHIP_OPTIONS.map(({ key, label }) => ({ key, label }))}
           active={filters.status}
@@ -328,6 +357,7 @@ export default function SearchFilterBar({
           onChange={(status) => patch({ status: status as SampleFilters['status'] })}
           showTopBorder={false}
         />
+        )}
       </div>
     </div>
   );

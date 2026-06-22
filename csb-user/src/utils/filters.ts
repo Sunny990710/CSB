@@ -1,4 +1,4 @@
-import { Sample, sampleStatusLabel } from '@/types';
+import { Sample, Rental, sampleStatusLabel } from '@/types';
 import { sampleMatchesColor } from './colorPalette';
 import { sampleMatchesSeason } from './seasonFilter';
 import { matchesMultiFilter, matchesMultiFilterExact } from './filterMultiSelect';
@@ -104,4 +104,40 @@ export function statusCounts(samples: Sample[]): Record<string, number> {
     counts[s.status] = (counts[s.status] || 0) + 1;
   }
   return counts;
+}
+
+function hasActiveSampleFilters(filters: SampleFilters): boolean {
+  return (
+    !!filters.query.trim() ||
+    !!filters.regDateFrom ||
+    !!filters.regDateTo ||
+    filters.brand.length > 0 ||
+    filters.category.length > 0 ||
+    !!filters.originalSubCategory ||
+    !!filters.originalSubCategoryItem ||
+    filters.color.length > 0 ||
+    filters.gender.length > 0 ||
+    filters.season.length > 0 ||
+    filters.registerer.length > 0
+  );
+}
+
+/** 대여 건 목록 — 연결된 샘플 기준으로 SearchFilterBar 필터 적용 */
+export function filterRentalsBySampleFilters(
+  rentals: Rental[],
+  sampleByCode: Map<string, Sample>,
+  filters: SampleFilters
+): Rental[] {
+  const sampleFilters: SampleFilters = { ...filters, status: '전체' };
+  return rentals.filter((rental) => {
+    const sample = sampleByCode.get(rental.sampleCode);
+    if (sample) {
+      return filterSamples([sample], sampleFilters).length > 0;
+    }
+    if (!hasActiveSampleFilters(filters)) return true;
+    const q = filters.query.trim().toLowerCase();
+    if (!q) return false;
+    const hay = [rental.sampleCode, rental.sampleName, rental.sampleBrand].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(q);
+  });
 }

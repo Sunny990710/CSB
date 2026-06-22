@@ -3,6 +3,11 @@ import { createPortal } from 'react-dom';
 import JSZip from 'jszip';
 import { FileText, Search, X, CheckCircle2, Download, ChevronDown } from 'lucide-react';
 import { Sample, Category, RentalAgreement, RentalAgreementItem, LossDamageReport } from '../types';
+import {
+  categoryFilterOptionsForCountries,
+} from '../utils/sampleCategoryFilters';
+import BrandFilterDropdown from './BrandFilterDropdown';
+import FilterDropdown from './FilterDropdown';
 import { DateRangeCalendar } from './DateRangeCalendar';
 
 type DocTab = 'agreements' | 'loss-reports' | 'compensation';
@@ -25,8 +30,6 @@ const COMPENSATION_ROWS: { item: string; ep: number; original: number; ownKr: nu
 const TABLE_HEAD =
   'bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider font-sans text-left';
 const TABLE_BODY = 'divide-y divide-slate-100 text-xs text-slate-700 font-medium';
-
-const CATEGORY_ORDER = ['오리지널', '유형화샘플', 'EP샘플', '자사샘플', '중국샘플'];
 
 const AGREEMENT_TERMS = [
   '대여 샘플은 지정된 목적(기획·촬영·검수 등) 외 사용을 금하며, 훼손·오염·분실 시 즉시 담당자에게 보고해야 합니다.',
@@ -141,10 +144,10 @@ export default function RentalDocumentBox({
 }: RentalDocumentBoxProps) {
   const [docTab, setDocTab] = useState<DocTab>('agreements');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedBrand, setSelectedBrand] = useState('전체');
-  const [selectedCountry, setSelectedCountry] = useState('전체');
-  const [selectedCategory, setSelectedCategory] = useState('전체');
-  const [selectedRegisterer, setSelectedRegisterer] = useState('전체');
+  const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
+  const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [selectedBorrowers, setSelectedBorrowers] = useState<string[]>([]);
   const [regDateFrom, setRegDateFrom] = useState('');
   const [regDateTo, setRegDateTo] = useState('');
   const [regDateOpen, setRegDateOpen] = useState(false);
@@ -171,21 +174,6 @@ export default function RentalDocumentBox({
         ? `대여일: ${regDateFrom}`
         : `대여일: ${regDateFrom || '…'} ~ ${regDateTo || '…'}`;
 
-  const sortByCategoryOrder = (arr: string[]) =>
-    [...arr].sort((a, b) => {
-      const ia = CATEGORY_ORDER.indexOf(a);
-      const ib = CATEGORY_ORDER.indexOf(b);
-      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
-    });
-
-  const topLevelCategoryNames = sortByCategoryOrder(
-    categories.filter((c) => c.useYn === '사용' && !c.parentId).map((c) => c.name)
-  );
-  const categoryFilterOptions =
-    topLevelCategoryNames.length > 0
-      ? topLevelCategoryNames
-      : sortByCategoryOrder(['오리지널', '유형화샘플', 'EP샘플', '자사샘플', '중국샘플']);
-
   const sampleOf = (code: string) => samples.find((s) => s.code === code);
 
   const sampleCountryOf = (s: Sample | undefined) =>
@@ -203,11 +191,11 @@ export default function RentalDocumentBox({
     return samples.filter((s) => codes.has(s.code));
   }, [rentalAgreements, lossDamageReports, samples]);
 
-  const uniqueBrands = useMemo(
-    () => ['전체', ...Array.from(new Set(relatedSamples.map((s) => s.brand).filter(Boolean))).sort()],
+  const brandOptions = useMemo(
+    () => Array.from(new Set(relatedSamples.map((s) => s.brand).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ko')),
     [relatedSamples]
   );
-  const uniqueRegisterers = useMemo(() => {
+  const borrowerOptions = useMemo(() => {
     const names = new Set<string>();
     rentalAgreements.forEach((a) => {
       if (a.borrowerName) names.add(a.borrowerName);
@@ -215,8 +203,13 @@ export default function RentalDocumentBox({
     lossDamageReports.forEach((r) => {
       if (r.employeeName) names.add(r.employeeName);
     });
-    return ['전체', ...Array.from(names).sort()];
+    return Array.from(names).sort((a, b) => a.localeCompare(b, 'ko'));
   }, [rentalAgreements, lossDamageReports]);
+
+  const categoryOptions = useMemo(
+    () => categoryFilterOptionsForCountries(selectedCountries),
+    [selectedCountries]
+  );
 
   const matchesDetailFilters = (
     sampleCode: string,
@@ -227,10 +220,10 @@ export default function RentalDocumentBox({
     const sampleDate = getRegDateKey(opts?.dateFallback || s?.regDate);
     const category = sampleCategoryOf(s, opts?.itemCategory);
 
-    if (selectedBrand !== '전체' && brand !== selectedBrand) return false;
-    if (selectedCountry !== '전체' && sampleCountryOf(s) !== selectedCountry) return false;
-    if (selectedCategory !== '전체' && category !== selectedCategory) return false;
-    if (selectedRegisterer !== '전체' && (opts?.borrowerName || '') !== selectedRegisterer) return false;
+    if (selectedBrands.length > 0 && !selectedBrands.includes(brand)) return false;
+    if (selectedCountries.length > 0 && !selectedCountries.includes(sampleCountryOf(s))) return false;
+    if (selectedCategories.length > 0 && !selectedCategories.includes(category)) return false;
+    if (selectedBorrowers.length > 0 && !selectedBorrowers.includes(opts?.borrowerName || '')) return false;
     if (regDateFrom && (!sampleDate || sampleDate < regDateFrom)) return false;
     if (regDateTo && (!sampleDate || sampleDate > regDateTo)) return false;
     return true;
@@ -261,21 +254,22 @@ export default function RentalDocumentBox({
               borrowerName: a.borrowerName,
             });
           }
-          if (selectedBrand !== '전체' && a.brand !== selectedBrand) return false;
-          if (selectedRegisterer !== '전체' && a.borrowerName !== selectedRegisterer) return false;
+          if (selectedBrands.length > 0 && !selectedBrands.includes(a.brand)) return false;
+          if (selectedBorrowers.length > 0 && !selectedBorrowers.includes(a.borrowerName)) return false;
           const docDate = getRegDateKey(a.rentDate || a.createdAt);
           if (regDateFrom && docDate < regDateFrom) return false;
           if (regDateTo && docDate > regDateTo) return false;
-          return selectedCountry === '전체' && selectedCategory === '전체' && selectedRegisterer === '전체';
+          if (selectedCountries.length > 0 || selectedCategories.length > 0) return false;
+          return true;
         })
         .sort((a, b) => (b.createdAt || b.rentDate).localeCompare(a.createdAt || a.rentDate)),
     [
       rentalAgreements,
       searchQuery,
-      selectedBrand,
-      selectedCountry,
-      selectedCategory,
-      selectedRegisterer,
+      selectedBrands,
+      selectedCountries,
+      selectedCategories,
+      selectedBorrowers,
       regDateFrom,
       regDateTo,
       samples,
@@ -309,10 +303,10 @@ export default function RentalDocumentBox({
     [
       lossDamageReports,
       searchQuery,
-      selectedBrand,
-      selectedCountry,
-      selectedCategory,
-      selectedRegisterer,
+      selectedBrands,
+      selectedCountries,
+      selectedCategories,
+      selectedBorrowers,
       regDateFrom,
       regDateTo,
       samples,
@@ -365,7 +359,11 @@ export default function RentalDocumentBox({
   useEffect(() => {
     setCurrentPage(1);
     setSelectedRowKeys(new Set());
-  }, [searchQuery, selectedBrand, selectedCountry, selectedCategory, selectedRegisterer, regDateFrom, regDateTo, docTab, pageSize]);
+  }, [searchQuery, selectedBrands, selectedCountries, selectedCategories, selectedBorrowers, regDateFrom, regDateTo, docTab, pageSize]);
+
+  useEffect(() => {
+    setSelectedCategories([]);
+  }, [selectedCountries]);
 
   useEffect(() => {
     if (!regDateOpen) return;
@@ -380,10 +378,10 @@ export default function RentalDocumentBox({
 
   const resetAllFilters = () => {
     setSearchQuery('');
-    setSelectedBrand('전체');
-    setSelectedCountry('전체');
-    setSelectedCategory('전체');
-    setSelectedRegisterer('전체');
+    setSelectedBrands([]);
+    setSelectedCountries([]);
+    setSelectedCategories([]);
+    setSelectedBorrowers([]);
     setRegDateFrom('');
     setRegDateTo('');
     setRegDateOpen(false);
@@ -556,64 +554,35 @@ export default function RentalDocumentBox({
                   document.body
                 )}
 
-              <div className="relative shrink-0">
-                <select
-                  value={selectedBrand}
-                  onChange={(e) => setSelectedBrand(e.target.value)}
-                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                >
-                  {uniqueBrands.map((b) => (
-                    <option key={b} value={b}>
-                      {b === '전체' ? '브랜드: 전체' : b}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-              </div>
+              <BrandFilterDropdown
+                value={selectedBrands}
+                brands={brandOptions}
+                onChange={setSelectedBrands}
+              />
 
-              <div className="relative shrink-0">
-                <select
-                  value={selectedCountry}
-                  onChange={(e) => setSelectedCountry(e.target.value)}
-                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                >
-                  <option value="전체">국가: 전체</option>
-                  <option value="한국">한국</option>
-                  <option value="중국">중국</option>
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-              </div>
+              <FilterDropdown
+                label="국가"
+                value={selectedCountries}
+                options={['한국', '중국']}
+                onChange={setSelectedCountries}
+                popoverWidth={200}
+              />
 
-              <div className="relative shrink-0">
-                <select
-                  value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                >
-                  <option value="전체">카테고리: 전체</option>
-                  {categoryFilterOptions.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-              </div>
+              <FilterDropdown
+                label="카테고리"
+                value={selectedCategories}
+                options={categoryOptions}
+                onChange={setSelectedCategories}
+                popoverWidth={240}
+              />
 
-              <div className="relative shrink-0">
-                <select
-                  value={selectedRegisterer}
-                  onChange={(e) => setSelectedRegisterer(e.target.value)}
-                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                >
-                  {uniqueRegisterers.map((r) => (
-                    <option key={r} value={r}>
-                      {r === '전체' ? '대여자: 전체' : r}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-              </div>
+              <FilterDropdown
+                label="대여자"
+                value={selectedBorrowers}
+                options={borrowerOptions}
+                onChange={setSelectedBorrowers}
+                popoverWidth={240}
+              />
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5 lg:self-center shrink-0 self-end justify-end w-full lg:w-auto">

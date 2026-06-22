@@ -7,6 +7,9 @@ import {
 import { Sample, Rental, RentalAgreement, RentalAgreementItem, Member, Category, LossDamageReport, rentalStatusLabel, effectiveRentalStatus } from '../types';
 import { DateRangeCalendar } from './DateRangeCalendar';
 import LossDamageReportModal, { LossDamageReportSubmitPayload } from './LossDamageReportModal';
+import { categoryFilterOptionsForCountries } from '../utils/sampleCategoryFilters';
+import BrandFilterDropdown from './BrandFilterDropdown';
+import FilterDropdown from './FilterDropdown';
 import RentalDocumentBox from './RentalDocumentBox';
 
 interface RentalManagerViewProps {
@@ -143,10 +146,10 @@ export default function RentalManagerView({
   const [statusTab, setStatusTab] = useState<StatusTab>('all');
   const [pendingSubTab, setPendingSubTab] = useState<PendingSubTab>('waiting');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedBrand, setSelectedBrand] = useState('전체');
-  const [selectedCountry, setSelectedCountry] = useState('전체');
-  const [selectedCategory, setSelectedCategory] = useState('전체');
-  const [selectedRegisterer, setSelectedRegisterer] = useState('전체');
+  const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
+  const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [selectedBorrowers, setSelectedBorrowers] = useState<string[]>([]);
   const [regDateFrom, setRegDateFrom] = useState('');
   const [regDateTo, setRegDateTo] = useState('');
   const [regDateOpen, setRegDateOpen] = useState(false);
@@ -198,21 +201,6 @@ export default function RentalManagerView({
         ? `일자: ${regDateFrom}`
         : `일자: ${regDateFrom || '…'} ~ ${regDateTo || '…'}`;
 
-  const CATEGORY_ORDER = ['오리지널', '유형화샘플', 'EP샘플', '자사샘플', '중국샘플'];
-  const sortByCategoryOrder = (arr: string[]) =>
-    [...arr].sort((a, b) => {
-      const ia = CATEGORY_ORDER.indexOf(a);
-      const ib = CATEGORY_ORDER.indexOf(b);
-      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
-    });
-  const topLevelCategoryNames = sortByCategoryOrder(
-    categories.filter((c) => c.useYn === '사용' && !c.parentId).map((c) => c.name)
-  );
-  const categoryFilterOptions =
-    topLevelCategoryNames.length > 0
-      ? topLevelCategoryNames
-      : sortByCategoryOrder(['오리지널', '유형화샘플', 'EP샘플', '자사샘플', '중국샘플']);
-
   const sampleOf = (code: string) => samples.find((s) => s.code === code);
 
   const sampleCountryOf = (s: Sample | undefined) =>
@@ -232,10 +220,10 @@ export default function RentalManagerView({
     const sampleDate = getRegDateKey(s?.regDate || opts?.dateFallback);
     const category = sampleCategoryOf(s, opts?.itemCategory);
 
-    if (selectedBrand !== '전체' && brand !== selectedBrand) return false;
-    if (selectedCountry !== '전체' && sampleCountryOf(s) !== selectedCountry) return false;
-    if (selectedCategory !== '전체' && category !== selectedCategory) return false;
-    if (selectedRegisterer !== '전체' && (opts?.borrowerName || '') !== selectedRegisterer) return false;
+    if (selectedBrands.length > 0 && !selectedBrands.includes(brand)) return false;
+    if (selectedCountries.length > 0 && !selectedCountries.includes(sampleCountryOf(s))) return false;
+    if (selectedCategories.length > 0 && !selectedCategories.includes(category)) return false;
+    if (selectedBorrowers.length > 0 && !selectedBorrowers.includes(opts?.borrowerName || '')) return false;
     if (regDateFrom && (!sampleDate || sampleDate < regDateFrom)) return false;
     if (regDateTo && (!sampleDate || sampleDate > regDateTo)) return false;
     return true;
@@ -248,13 +236,18 @@ export default function RentalManagerView({
     return sample?.name || item.sampleName || '-';
   };
 
-  const uniqueBrands = useMemo(
-    () => ['전체', ...Array.from(new Set(relatedSamples.map((s) => s.brand).filter(Boolean))).sort()],
+  const brandOptions = useMemo(
+    () => Array.from(new Set(relatedSamples.map((s) => s.brand).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ko')),
     [relatedSamples]
   );
-  const uniqueRegisterers = useMemo(
-    () => ['전체', ...Array.from(new Set(rentals.map((r) => r.borrowerName).filter(Boolean))).sort()],
+  const borrowerOptions = useMemo(
+    () => Array.from(new Set(rentals.map((r) => r.borrowerName).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ko')),
     [rentals]
+  );
+
+  const categoryOptions = useMemo(
+    () => categoryFilterOptionsForCountries(selectedCountries),
+    [selectedCountries]
   );
 
   const filterAgreementsBySearch = (agreements: RentalAgreement[]) =>
@@ -522,7 +515,11 @@ export default function RentalManagerView({
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, selectedBrand, selectedCountry, selectedCategory, selectedRegisterer, regDateFrom, regDateTo, statusTab, pendingSubTab, pageSize]);
+  }, [searchQuery, selectedBrands, selectedCountries, selectedCategories, selectedBorrowers, regDateFrom, regDateTo, statusTab, pendingSubTab, pageSize]);
+
+  useEffect(() => {
+    setSelectedCategories([]);
+  }, [selectedCountries]);
 
   useEffect(() => {
     if (!regDateOpen) return;
@@ -537,10 +534,10 @@ export default function RentalManagerView({
 
   const resetAllFilters = () => {
     setSearchQuery('');
-    setSelectedBrand('전체');
-    setSelectedCountry('전체');
-    setSelectedCategory('전체');
-    setSelectedRegisterer('전체');
+    setSelectedBrands([]);
+    setSelectedCountries([]);
+    setSelectedCategories([]);
+    setSelectedBorrowers([]);
     setRegDateFrom('');
     setRegDateTo('');
     setRegDateOpen(false);
@@ -1403,64 +1400,35 @@ export default function RentalManagerView({
                   document.body
                 )}
 
-              <div className="relative shrink-0">
-                <select
-                  value={selectedBrand}
-                  onChange={(e) => setSelectedBrand(e.target.value)}
-                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                >
-                  {uniqueBrands.map((b) => (
-                    <option key={b} value={b}>
-                      {b === '전체' ? '브랜드: 전체' : b}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-              </div>
+              <BrandFilterDropdown
+                value={selectedBrands}
+                brands={brandOptions}
+                onChange={setSelectedBrands}
+              />
 
-              <div className="relative shrink-0">
-                <select
-                  value={selectedCountry}
-                  onChange={(e) => setSelectedCountry(e.target.value)}
-                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                >
-                  <option value="전체">국가: 전체</option>
-                  <option value="한국">한국</option>
-                  <option value="중국">중국</option>
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-              </div>
+              <FilterDropdown
+                label="국가"
+                value={selectedCountries}
+                options={['한국', '중국']}
+                onChange={setSelectedCountries}
+                popoverWidth={200}
+              />
 
-              <div className="relative shrink-0">
-                <select
-                  value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                >
-                  <option value="전체">카테고리: 전체</option>
-                  {categoryFilterOptions.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-              </div>
+              <FilterDropdown
+                label="카테고리"
+                value={selectedCategories}
+                options={categoryOptions}
+                onChange={setSelectedCategories}
+                popoverWidth={240}
+              />
 
-              <div className="relative shrink-0">
-                <select
-                  value={selectedRegisterer}
-                  onChange={(e) => setSelectedRegisterer(e.target.value)}
-                  className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                >
-                  {uniqueRegisterers.map((r) => (
-                    <option key={r} value={r}>
-                      {r === '전체' ? '대여자: 전체' : r}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-              </div>
+              <FilterDropdown
+                label="대여자"
+                value={selectedBorrowers}
+                options={borrowerOptions}
+                onChange={setSelectedBorrowers}
+                popoverWidth={240}
+              />
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5 lg:self-center shrink-0 self-end justify-end w-full lg:w-auto">

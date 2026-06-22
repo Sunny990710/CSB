@@ -7,6 +7,7 @@ import {
   TrendingUp, TrendingDown, Minus, Flame,
   ChevronRight, ChevronDown, X,
 } from 'lucide-react';
+import FilterDropdown from './FilterDropdown';
 import { Sample, Rental, Member, rentalStatusLabel, effectiveRentalStatus, sampleStatusLabel, SampleStatus } from '../types';
 
 interface DashboardViewProps {
@@ -348,7 +349,7 @@ export default function DashboardView({
   // Local states for AI notification panel
   const [sendingId, setSendingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterDept, setFilterDept] = useState('전체');
+  const [selectedDepts, setSelectedDepts] = useState<string[]>([]);
   const [overdueWeekFilter, setOverdueWeekFilter] = useState<OverdueWeekFilter>(1);
   const [managerTask, setManagerTask] = useState<ManagerTask>('overdue');
   const [bulkSending, setBulkSending] = useState(false);
@@ -362,14 +363,9 @@ export default function DashboardView({
     });
   };
 
-  const overdueDeptOptions = useMemo(
-    () => [...new Set(activeOverdues.map((r) => r.borrowerGroup).filter(Boolean))].sort(),
-    [activeOverdues]
-  );
-
   const hasListFilters =
     !!searchQuery.trim() ||
-    filterDept !== '전체';
+    selectedDepts.length > 0;
 
   const overdueWeekCounts = useMemo(() => {
     const counts: Record<OverdueWeekFilter, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
@@ -389,6 +385,18 @@ export default function DashboardView({
       return due >= TODAY && due < thisEnd;
     });
   }, [rentals]);
+
+  const deptOptions = useMemo(
+    () =>
+      [
+        ...new Set(
+          [...activeOverdues, ...dueSoonRentals]
+            .map((r) => r.borrowerGroup)
+            .filter(Boolean)
+        ),
+      ].sort(),
+    [activeOverdues, dueSoonRentals]
+  );
 
   const daysUntilDue = (r: Rental) => {
     const due = parseDay(r.dueDate);
@@ -729,7 +737,7 @@ export default function DashboardView({
   const filteredOverdues = activeOverdues
     .filter((overdue) => {
       if (getOverdueWeek(overdueDaysOf(overdue)) !== overdueWeekFilter) return false;
-      if (filterDept !== '전체' && overdue.borrowerGroup !== filterDept) return false;
+      if (selectedDepts.length > 0 && !selectedDepts.includes(overdue.borrowerGroup)) return false;
       return matchSearch(
         searchQuery,
         overdue.sampleBrand,
@@ -748,7 +756,7 @@ export default function DashboardView({
 
   const filteredDueSoon = dueSoonRentals
     .filter((rental) => {
-      if (filterDept !== '전체' && rental.borrowerGroup !== filterDept) return false;
+      if (selectedDepts.length > 0 && !selectedDepts.includes(rental.borrowerGroup)) return false;
       return matchSearch(
         searchQuery,
         rental.sampleBrand,
@@ -1074,20 +1082,13 @@ export default function DashboardView({
 
             {/* Filters & Sort */}
             <div className="flex items-center gap-x-2 gap-y-2 flex-nowrap min-w-0">
-              <span className="text-[10px] font-bold text-slate-400 shrink-0">부서</span>
-              <div className="relative shrink-0">
-                <select
-                  value={filterDept}
-                  onChange={(e) => setFilterDept(e.target.value)}
-                  className="appearance-none h-7 bg-white border border-slate-200 pl-2.5 pr-7 rounded-lg text-[11px] font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-rose-500/30 cursor-pointer"
-                >
-                  <option value="전체">전체</option>
-                  {overdueDeptOptions.map((d) => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400 pointer-events-none" />
-              </div>
+              <FilterDropdown
+                label="부서"
+                value={selectedDepts}
+                options={deptOptions}
+                onChange={setSelectedDepts}
+                popoverWidth={240}
+              />
 
               {managerTask === 'overdue' && (
                 <>

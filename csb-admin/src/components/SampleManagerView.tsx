@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -8,6 +8,9 @@ import {
 } from 'lucide-react';
 import { Sample, SampleStatus, Rental, Category, AiTagGroups, AiTagCategory, sampleStatusLabel } from '../types';
 import { DateRangeCalendar } from './DateRangeCalendar';
+import { categoryFilterOptionsForCountries, SAMPLE_CATEGORIES_BY_COUNTRY } from '../utils/sampleCategoryFilters';
+import BrandFilterDropdown from './BrandFilterDropdown';
+import FilterDropdown from './FilterDropdown';
 
 /** 상품 목록 테이블 — 탭/필터 전환 시 열 너비가 흔들리지 않도록 고정 */
 const SAMPLE_LIST_TABLE_MIN_W = 'min-w-[1180px]';
@@ -255,11 +258,11 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
     }
   }, [forceTab]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCountry, setSelectedCountry] = useState('전체');
-  const [selectedBrand, setSelectedBrand] = useState('전체');
-  const [selectedCategory, setSelectedCategory] = useState('전체');
+  const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
+  const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedStatus, setSelectedStatus] = useState('전체');
-  const [selectedRegisterer, setSelectedRegisterer] = useState('전체');
+  const [selectedRegisterers, setSelectedRegisterers] = useState<string[]>([]);
 
   useEffect(() => {
     if (statusFilter) setSelectedStatus(statusFilter);
@@ -438,14 +441,16 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
       s.category.toLowerCase().includes(searchQuery.toLowerCase());
     
     const countVal = (s.country === 'CN' || s.category === '중국샘플') ? '중국' : '한국';
-    const matchCountry = selectedCountry === '전체' || countVal === selectedCountry;
+    const matchCountry = selectedCountries.length === 0 || selectedCountries.includes(countVal);
 
-    const catVal = s.category === '중국샘플' ? '유형화샘플' : s.category;
-    const matchCategory = selectedCategory === '전체' || catVal === selectedCategory;
+    const matchCategory =
+      selectedCategories.length === 0 ||
+      selectedCategories.includes(s.category) ||
+      (s.category === '중국샘플' && selectedCategories.includes('유형화샘플'));
 
-    const matchBrand = selectedBrand === '전체' || s.brand === selectedBrand;
+    const matchBrand = selectedBrands.length === 0 || selectedBrands.includes(s.brand);
     const matchStatus = selectedStatus === '전체' || s.status === selectedStatus;
-    const matchRegisterer = selectedRegisterer === '전체' || s.registerer === selectedRegisterer;
+    const matchRegisterer = selectedRegisterers.length === 0 || selectedRegisterers.includes(s.registerer);
 
     const sampleDate = getRegDateKey(s.regDate);
     const matchRegDateFrom = !regDateFrom || (!!sampleDate && sampleDate >= regDateFrom);
@@ -523,7 +528,7 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
   // 필터/페이지크기 변경 시 첫 페이지로 이동
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, selectedBrand, selectedCategory, selectedStatus, selectedRegisterer, selectedCountry, regDateFrom, regDateTo, pageSize]);
+  }, [searchQuery, selectedBrands, selectedCategories, selectedStatus, selectedRegisterers, selectedCountries, regDateFrom, regDateTo, pageSize]);
 
   useEffect(() => {
     if (!regDateOpen) return;
@@ -562,8 +567,8 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
 
   // 국가 변경 시 카테고리 선택값 초기화 (국가별 카테고리 목록이 달라지므로)
   useEffect(() => {
-    setSelectedCategory('전체');
-  }, [selectedCountry]);
+    setSelectedCategories([]);
+  }, [selectedCountries]);
 
   // 마지막으로 사용한 스프레드시트 주소 복원 (매번 입력하지 않도록)
   useEffect(() => {
@@ -574,17 +579,20 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
   }, []);
 
   // Get list of unique brands / categories
-  const uniqueBrands = ['전체', ...Array.from(new Set(samples.map((s) => s.brand)))];
-  const uniqueRegisterers = ['전체', ...Array.from(new Set(samples.map((s) => s.registerer).filter(Boolean)))];
+  const brandOptions = useMemo(
+    () => Array.from(new Set(samples.map((s) => s.brand).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ko')),
+    [samples]
+  );
+  const registererOptions = useMemo(
+    () => Array.from(new Set(samples.map((s) => s.registerer).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ko')),
+    [samples]
+  );
   // 국가별 카테고리 매핑 (한국: 오리지널/유형화샘플/EP샘플/자사샘플, 중국: 중국샘플)
-  const categoriesByCountry: Record<string, string[]> = {
-    한국: ['오리지널', '유형화샘플', 'EP샘플', '자사샘플'],
-    중국: ['중국샘플'],
-  };
-  const uniqueCategories =
-    selectedCountry === '한국' || selectedCountry === '중국'
-      ? ['전체', ...categoriesByCountry[selectedCountry]]
-      : ['전체', ...topLevelCategoryNames];
+  const categoriesByCountry = SAMPLE_CATEGORIES_BY_COUNTRY;
+  const categoryOptions = useMemo(
+    () => categoryFilterOptionsForCountries(selectedCountries),
+    [selectedCountries]
+  );
 
   const sampleStatusCounts: Record<SampleStatus, number> = {
     대여가능: samples.filter((s) => s.status === '대여가능').length,
@@ -1607,11 +1615,11 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                   <button 
                     onClick={() => {
                       setSearchQuery('');
-                      setSelectedCountry('전체');
-                      setSelectedBrand('전체');
-                      setSelectedCategory('전체');
+                      setSelectedCountries([]);
+                      setSelectedBrands([]);
+                      setSelectedCategories([]);
                       setSelectedStatus('전체');
-                      setSelectedRegisterer('전체');
+                      setSelectedRegisterers([]);
                       setRegDateFrom('');
                       setRegDateTo('');
                       setRegDateOpen(false);
@@ -1671,64 +1679,35 @@ export default function SampleManagerView({ samples, onSaveDB, forceTab, rentals
                     document.body
                   )}
 
-                  {/* Brand select as outline chip */}
-                  <div className="relative shrink-0">
-                    <select
-                      value={selectedBrand}
-                      onChange={(e) => setSelectedBrand(e.target.value)}
-                      className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                    >
-                      <option value="전체">브랜드: 전체</option>
-                      {uniqueBrands.filter(b => b !== '전체').map(b => (
-                        <option key={b} value={b}>{b}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-                  </div>
+                  <BrandFilterDropdown
+                    value={selectedBrands}
+                    brands={brandOptions}
+                    onChange={setSelectedBrands}
+                  />
 
-                  {/* Country select as outline chip */}
-                  <div className="relative shrink-0">
-                    <select
-                      value={selectedCountry}
-                      onChange={(e) => setSelectedCountry(e.target.value)}
-                      className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                    >
-                      <option value="전체">국가: 전체</option>
-                      <option value="한국">한국</option>
-                      <option value="중국">중국</option>
-                    </select>
-                    <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-                  </div>
+                  <FilterDropdown
+                    label="국가"
+                    value={selectedCountries}
+                    options={['한국', '중국']}
+                    onChange={setSelectedCountries}
+                    popoverWidth={200}
+                  />
 
-                  {/* Category select as outline chip */}
-                  <div className="relative shrink-0">
-                    <select
-                      value={selectedCategory}
-                      onChange={(e) => setSelectedCategory(e.target.value)}
-                      className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                    >
-                      <option value="전체">카테고리: 전체</option>
-                      {uniqueCategories.filter(c => c !== '전체').map(c => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-                  </div>
+                  <FilterDropdown
+                    label="카테고리"
+                    value={selectedCategories}
+                    options={categoryOptions}
+                    onChange={setSelectedCategories}
+                    popoverWidth={240}
+                  />
 
-                  {/* Registerer filter select */}
-                  <div className="relative shrink-0">
-                    <select
-                      value={selectedRegisterer}
-                      onChange={(e) => setSelectedRegisterer(e.target.value)}
-                      className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-                    >
-                      <option value="전체">등록자: 전체</option>
-                      {uniqueRegisterers.filter(r => r !== '전체').map(r => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-                  </div>
+                  <FilterDropdown
+                    label="등록자"
+                    value={selectedRegisterers}
+                    options={registererOptions}
+                    onChange={setSelectedRegisterers}
+                    popoverWidth={240}
+                  />
 
                 </div>
 

@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   LayoutGrid,
-  ShoppingCart,
   ClipboardList,
   Archive,
   HelpCircle,
@@ -18,10 +17,9 @@ import logoUrl from '@/assets/logo.png';
 import UserLoginView from './components/UserLoginView';
 import UserHomeView from './components/UserHomeView';
 import UserLockerView from './components/UserLockerView';
-import UserRentalView from './components/UserRentalView';
 import UserRentalStatusView from './components/UserRentalStatusView';
 import { USER_AUTH_KEY, UserTab, DUE_SOON_DAYS } from './utils/constants';
-import { getLockerCodes, toggleLockerCode, removeLockerCode, saveLockerCodes } from './utils/locker';
+import { getLockerCodes, toggleLockerCode, removeLockerCode } from './utils/locker';
 import { fetchAvailabilityAlertCodes, toggleAvailabilityAlert } from './utils/availabilityAlerts';
 import { PREVIEW_MEMBERS, PREVIEW_RENTALS, PREVIEW_SAMPLES } from './utils/mockPreviewData';
 
@@ -38,7 +36,6 @@ export default function UserApp() {
   const [currentUser, setCurrentUser] = useState<Member | null>(null);
   const [lockerCodes, setLockerCodes] = useState<string[]>([]);
   const [availabilityAlertCodes, setAvailabilityAlertCodes] = useState<string[]>([]);
-  const [pendingRentCodes, setPendingRentCodes] = useState<string[]>([]);
 
   const loadData = useCallback(async (options?: { silent?: boolean }) => {
     if (!options?.silent) setLoading(true);
@@ -109,16 +106,6 @@ export default function UserApp() {
     setLockerCodes(removeLockerCode(currentUser.memberId, code));
   };
 
-  const handleRemoveFromLocker = (codes: string[]) => {
-    if (!currentUser) return;
-    let next = getLockerCodes(currentUser.memberId);
-    for (const code of codes) {
-      next = next.filter((c) => c !== code);
-    }
-    saveLockerCodes(currentUser.memberId, next);
-    setLockerCodes(next);
-  };
-
   const handleToggleAvailabilityAlert = async (sample: Sample) => {
     if (!currentUser) return;
     const result = await toggleAvailabilityAlert({
@@ -138,11 +125,6 @@ export default function UserApp() {
     if (!currentUser) return [];
     return rentals.filter((r) => r.borrowerId === currentUser.memberId);
   }, [rentals, currentUser]);
-
-  const myActiveRentals = useMemo(
-    () => myRentals.filter((r) => effectiveRentalStatus(r) !== '반납완료'),
-    [myRentals]
-  );
 
   const startOfToday = useMemo(() => {
     const d = new Date();
@@ -171,7 +153,6 @@ export default function UserApp() {
 
   const navItems: { id: UserTab; label: string; icon: React.ElementType; badge?: number }[] = [
     { id: 'home', label: '홈', icon: LayoutGrid },
-    { id: 'rental', label: '대여/반납하기', icon: ShoppingCart, badge: myActiveRentals.length || undefined },
     { id: 'rental_status', label: '대여 현황', icon: ClipboardList },
     { id: 'locker', label: '내 보관함', icon: Archive, badge: lockerCodes.length || undefined },
   ];
@@ -323,7 +304,6 @@ export default function UserApp() {
             className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:outline-none focus:ring-1 focus:ring-violet-500"
           >
             <option value="home">홈</option>
-            <option value="rental">대여/반납하기</option>
             <option value="rental_status">대여 현황</option>
             <option value="locker">내 보관함</option>
           </select>
@@ -466,22 +446,12 @@ export default function UserApp() {
                   onNavigateLocker={() => setActiveTab('locker')}
                 />
               )}
-              {activeTab === 'rental' && (
-                <UserRentalView
-                  samples={samples}
-                  rentals={rentals}
-                  currentUser={currentUser}
-                  initialBorrowCodes={pendingRentCodes}
-                  previewMode={previewMode}
-                  onRefresh={() => void loadData({ silent: true })}
-                  onClearInitialBorrowCodes={() => setPendingRentCodes([])}
-                  onNavigateHome={() => setActiveTab('home')}
-                  onNavigateLocker={() => setActiveTab('locker')}
-                  onRemoveFromLocker={handleRemoveFromLocker}
-                />
-              )}
               {activeTab === 'rental_status' && (
-                <UserRentalStatusView rentals={rentals} borrowerId={currentUser.memberId} />
+                <UserRentalStatusView
+                  rentals={rentals}
+                  samples={samples}
+                  borrowerId={currentUser.memberId}
+                />
               )}
               {activeTab === 'locker' && (
                 <UserLockerView
@@ -490,11 +460,6 @@ export default function UserApp() {
                   availabilityAlertCodes={availabilityAlertCodes}
                   memberEmail={currentUser.email}
                   onRemove={handleRemoveLocker}
-                  onRent={(code) => {
-                    setPendingRentCodes([code]);
-                    setActiveTab('rental');
-                  }}
-                  onNavigateRental={() => setActiveTab('rental')}
                   onToggleAvailabilityAlert={handleToggleAvailabilityAlert}
                 />
               )}

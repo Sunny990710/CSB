@@ -5,6 +5,7 @@ import { DEFAULT_FILTERS, filterSamples, statusCounts, uniqueValues } from '../u
 import SearchFilterBar from './SearchFilterBar';
 import SampleImage from './SampleImage';
 import PageHeader from './PageHeader';
+import { StatusBadge } from './StatusChipBar';
 import { canSubscribeAvailabilityAlert } from '../utils/lockerHelpers';
 
 interface UserLockerViewProps {
@@ -13,8 +14,6 @@ interface UserLockerViewProps {
   availabilityAlertCodes: string[];
   memberEmail: string;
   onRemove: (code: string) => void;
-  onRent: (code: string) => void;
-  onNavigateRental: () => void;
   onToggleAvailabilityAlert: (sample: Sample) => void;
 }
 
@@ -25,14 +24,73 @@ const statusColor = (status: Sample['status']) => {
   return 'text-slate-600';
 };
 
+function LockerItemActions({
+  sample,
+  alertOn,
+  memberEmail,
+  onToggleAvailabilityAlert,
+  onRemove,
+  overlay = false,
+}: {
+  sample: Sample;
+  alertOn: boolean;
+  memberEmail: string;
+  onToggleAvailabilityAlert: (sample: Sample) => void;
+  onRemove: (code: string) => void;
+  overlay?: boolean;
+}) {
+  const showAlert = canSubscribeAvailabilityAlert(sample.status);
+  const baseBtn = overlay
+    ? 'p-2.5 rounded-xl border shadow-md backdrop-blur-sm transition-colors cursor-pointer'
+    : 'p-1.5 rounded-lg border transition-colors cursor-pointer';
+
+  return (
+    <div className="flex items-center justify-center gap-2">
+      {showAlert && (
+        <button
+          type="button"
+          onClick={() => onToggleAvailabilityAlert(sample)}
+          className={
+            overlay
+              ? `${baseBtn} ${
+                  alertOn
+                    ? 'border-amber-200 bg-white/95 text-amber-600 hover:bg-amber-50'
+                    : 'border-white/80 bg-white/95 text-slate-500 hover:text-amber-600 hover:border-amber-200'
+                }`
+              : `${baseBtn} ${
+                  alertOn
+                    ? 'border-amber-200 bg-amber-50 text-amber-600 hover:bg-amber-100'
+                    : 'border-slate-200 text-slate-400 hover:text-amber-600 hover:border-amber-200'
+                }`
+          }
+          title={alertOn ? '대여 가능 알림 해제' : `대여 가능 시 ${memberEmail}로 메일 알림 받기`}
+          aria-label={alertOn ? '대여 가능 알림 해제' : '대여 가능 알림 받기'}
+        >
+          {alertOn ? <BellRing className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => onRemove(sample.code)}
+        className={
+          overlay
+            ? `${baseBtn} border-white/80 bg-white/95 text-slate-500 hover:text-rose-600 hover:border-rose-200`
+            : `${baseBtn} border-slate-200 text-slate-400 hover:text-rose-600 hover:border-rose-200`
+        }
+        aria-label="보관함에서 제거"
+      >
+        <Trash2 className="w-4 h-4" />
+      </button>
+    </div>
+  );
+}
+
 export default function UserLockerView({
   samples,
   lockerCodes,
   availabilityAlertCodes,
   memberEmail,
   onRemove,
-  onRent,
-  onNavigateRental,
   onToggleAvailabilityAlert,
 }: UserLockerViewProps) {
   const [filters, setFilters] = useState({ ...DEFAULT_FILTERS });
@@ -49,7 +107,7 @@ export default function UserLockerView({
     <div className="space-y-5">
       <PageHeader
         title="내 보관함"
-        description="담아둔 샘플을 모아두고, 대여/반납 화면으로 보낼 수 있습니다."
+        description="담아둔 샘플을 모아두고, 대여 가능 시 알림을 받을 수 있습니다. 대여·반납은 관리자 데스크에서 처리합니다."
       />
 
       <SearchFilterBar
@@ -73,6 +131,50 @@ export default function UserLockerView({
           <p className="text-sm text-slate-400">보관함이 비어 있습니다.</p>
           <p className="text-xs text-slate-400 mt-1">홈에서 샘플을 담아 보세요.</p>
         </div>
+      ) : viewMode === 'grid' ? (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          {filtered.map((sample) => {
+            const alertOn = availabilityAlertCodes.includes(sample.code);
+
+            return (
+              <article
+                key={sample.code}
+                className="group bg-white border border-slate-200 rounded-2xl overflow-hidden hover:shadow-md transition-shadow"
+              >
+                <div className="relative aspect-[4/5]">
+                  <SampleImage sample={sample} className="w-full h-full" />
+                  <div className="absolute top-2 left-2 z-10">
+                    <StatusBadge status={sample.status} />
+                  </div>
+                  <div
+                    className="absolute inset-0 z-10 bg-slate-900/0 group-hover:bg-slate-900/25 transition-colors pointer-events-none"
+                    aria-hidden="true"
+                  />
+                  <div className="absolute inset-0 z-20 flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                    <LockerItemActions
+                      sample={sample}
+                      alertOn={alertOn}
+                      memberEmail={memberEmail}
+                      onToggleAvailabilityAlert={onToggleAvailabilityAlert}
+                      onRemove={onRemove}
+                      overlay
+                    />
+                  </div>
+                </div>
+                <div className="p-3.5 space-y-1">
+                  <p className="text-[10px] font-mono text-slate-400">{sample.code}</p>
+                  <h3 className="text-sm font-bold text-slate-900 line-clamp-2 leading-snug">{sample.name}</h3>
+                  <p className="text-[10px] text-slate-400">
+                    {sample.category} · {sample.brand}
+                  </p>
+                  <p className={`text-[11px] font-bold pt-1 ${statusColor(sample.status)}`}>
+                    {sampleStatusLabel(sample.status)}
+                  </p>
+                </div>
+              </article>
+            );
+          })}
+        </div>
       ) : (
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
           <table className="w-full text-xs">
@@ -91,8 +193,6 @@ export default function UserLockerView({
             </thead>
             <tbody>
               {filtered.map((sample, idx) => {
-                const canRent = sample.status === '대여가능';
-                const showAlert = canSubscribeAvailabilityAlert(sample.status);
                 const alertOn = availabilityAlertCodes.includes(sample.code);
 
                 return (
@@ -110,46 +210,13 @@ export default function UserLockerView({
                       {sampleStatusLabel(sample.status)}
                     </td>
                     <td className="py-3 px-4 text-center">
-                      <div className="flex items-center justify-center gap-2">
-                        {showAlert && (
-                          <button
-                            type="button"
-                            onClick={() => onToggleAvailabilityAlert(sample)}
-                            className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
-                              alertOn
-                                ? 'border-amber-200 bg-amber-50 text-amber-600 hover:bg-amber-100'
-                                : 'border-slate-200 text-slate-400 hover:text-amber-600 hover:border-amber-200'
-                            }`}
-                            title={
-                              alertOn
-                                ? '대여 가능 알림 해제'
-                                : `대여 가능 시 ${memberEmail}로 메일 알림 받기`
-                            }
-                            aria-label={alertOn ? '대여 가능 알림 해제' : '대여 가능 알림 받기'}
-                          >
-                            {alertOn ? <BellRing className="w-3.5 h-3.5" /> : <Bell className="w-3.5 h-3.5" />}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          disabled={!canRent}
-                          onClick={() => {
-                            onRent(sample.code);
-                            onNavigateRental();
-                          }}
-                          className="px-3 py-1.5 rounded-lg text-xs font-bold bg-violet-600 text-white disabled:bg-slate-100 disabled:text-slate-400 cursor-pointer disabled:cursor-not-allowed"
-                        >
-                          대여
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onRemove(sample.code)}
-                          className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-600 hover:border-rose-200 cursor-pointer"
-                          aria-label="보관함에서 제거"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                      <LockerItemActions
+                        sample={sample}
+                        alertOn={alertOn}
+                        memberEmail={memberEmail}
+                        onToggleAvailabilityAlert={onToggleAvailabilityAlert}
+                        onRemove={onRemove}
+                      />
                     </td>
                   </tr>
                 );

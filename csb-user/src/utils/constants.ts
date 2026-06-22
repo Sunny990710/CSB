@@ -56,7 +56,7 @@ export function getDisplayRentalFee(sample: { rentalFee?: number; price?: number
   return DEFAULT_RENTAL_FEE;
 }
 
-export type UserTab = 'home' | 'rental' | 'rental_status' | 'locker';
+export type UserTab = 'home' | 'rental_status' | 'locker';
 
 export const STATUS_CHIP_OPTIONS = [
   { key: '전체', label: '전체' },

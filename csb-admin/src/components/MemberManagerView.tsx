@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { Plus, Edit2, Trash2, Search, X, ChevronDown, RotateCcw } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, X, CheckCircle2 } from 'lucide-react';
 import { Member } from '../types';
+import FilterDropdown from './FilterDropdown';
 
 interface MemberManagerViewProps {
   members: Member[];
@@ -10,7 +11,7 @@ interface MemberManagerViewProps {
 
 const MEMBER_ROLES = ['시스템관리자', '사이트관리자', '중국사이트관리자', '일반사용자'];
 const MEMBER_AFFILIATIONS = ['이랜드이노플', '1사업부', '2사업부', '온라인BU'];
-const MEMBER_CATEGORIES = ['한국', '중국'];
+const MEMBER_COUNTRIES = ['한국', '중국'];
 
 const blankMember = (): Partial<Member> => ({
   memberId: '',
@@ -28,24 +29,30 @@ const blankMember = (): Partial<Member> => ({
 
 export default function MemberManagerView({ members, onSave }: MemberManagerViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterAffiliation, setFilterAffiliation] = useState('전체');
-  const [filterRole, setFilterRole] = useState('전체');
-  const [filterCategory, setFilterCategory] = useState('전체');
+  const [selectedAffiliations, setSelectedAffiliations] = useState<string[]>([]);
+  const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
+  const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
   const [isMemberFormOpen, setIsMemberFormOpen] = useState(false);
   const [editingMember, setEditingMember] = useState<Member | null>(null);
   const [newMember, setNewMember] = useState<Partial<Member>>(blankMember());
 
-  const uniqueAffiliations = ['전체', ...Array.from(new Set(members.map((m) => m.affiliation || m.groupName).filter(Boolean)))];
+  const affiliationOptions = useMemo(
+    () =>
+      Array.from(new Set(members.map((m) => m.affiliation || m.groupName).filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b, 'ko')
+      ),
+    [members]
+  );
 
   const resetFilters = () => {
-    setFilterAffiliation('전체');
-    setFilterRole('전체');
-    setFilterCategory('전체');
+    setSelectedAffiliations([]);
+    setSelectedRoles([]);
+    setSelectedCountries([]);
     setSearchQuery('');
   };
 
   const filteredMembers = members.filter((m) => {
-    if (m.status === 'pending') return false; // 미승인 사용자는 별도 탭에서 관리
+    if (m.status === 'pending') return false;
     const q = searchQuery.toLowerCase();
     const matchQ =
       m.memberId.toLowerCase().includes(q) ||
@@ -55,10 +62,12 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
       (m.affiliation || '').toLowerCase().includes(q) ||
       (m.brand || '').toLowerCase().includes(q) ||
       (m.role || '').toLowerCase().includes(q);
-    const matchAffiliation = filterAffiliation === '전체' || (m.affiliation || m.groupName) === filterAffiliation;
-    const matchRole = filterRole === '전체' || (m.role || '일반사용자') === filterRole;
-    const matchCategory = filterCategory === '전체' || (m.category || '한국') === filterCategory;
-    return matchQ && matchAffiliation && matchRole && matchCategory;
+    const matchAffiliation =
+      selectedAffiliations.length === 0 ||
+      selectedAffiliations.includes(m.affiliation || m.groupName || '');
+    const matchRole = selectedRoles.length === 0 || selectedRoles.includes(m.role || '일반사용자');
+    const matchCountry = selectedCountries.length === 0 || selectedCountries.includes(m.category || '한국');
+    return matchQ && matchAffiliation && matchRole && matchCountry;
   });
 
   const handleAddMember = (e: React.FormEvent) => {
@@ -115,17 +124,26 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
   return (
     <div className="space-y-6" id="member-manager-container">
       {/* Control tool bar */}
-      <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-xs space-y-3">
+      <div className="space-y-4 bg-white p-5 rounded-2xl border border-slate-200/60 shadow-sm">
         <div className="flex flex-col sm:flex-row gap-3 justify-between items-center">
-          <div className="relative flex-1 w-full max-w-md">
-            <Search className="absolute left-3 top-2.5 w-4.5 h-4.5 text-slate-400" />
+          <div className="relative flex-1 w-full">
+            <Search className="absolute left-3.5 top-2.5 w-4 h-4 text-slate-400" />
             <input
               type="text"
               placeholder="사번, 아이디, 이름, 이메일, 소속, 브랜드로 검색..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="w-full pl-10 pr-4 py-2.5 bg-slate-100/70 border-0 hover:bg-slate-100 focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-violet-500 rounded-xl text-xs font-medium placeholder:text-slate-400 transition-all"
             />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-2.5 p-0.5 hover:bg-slate-200 rounded-full cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5 text-slate-400" />
+              </button>
+            )}
           </div>
           <button
             onClick={() => setIsMemberFormOpen(true)}
@@ -136,58 +154,40 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
           </button>
         </div>
 
-        {/* Filter chips row */}
         <div className="flex flex-col lg:flex-row lg:justify-between items-stretch lg:items-center gap-x-3 gap-y-2.5 pt-2.5 border-t border-slate-100">
           <div className="flex flex-nowrap gap-x-2 items-center overflow-x-auto min-w-0 shrink">
             <button
+              type="button"
               onClick={resetFilters}
               className="bg-[#1e293b] hover:bg-[#0f172a] text-white text-xs font-bold py-1.5 px-3.5 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
             >
-              <RotateCcw className="w-3.5 h-3.5 text-white" />
+              <CheckCircle2 className="w-3.5 h-3.5 text-white" />
               <span>필터 초기화</span>
             </button>
 
-            <div className="relative shrink-0">
-              <select
-                value={filterAffiliation}
-                onChange={(e) => setFilterAffiliation(e.target.value)}
-                className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-              >
-                <option value="전체">소속: 전체</option>
-                {uniqueAffiliations.filter((a) => a !== '전체').map((a) => (
-                  <option key={a} value={a}>{a}</option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-            </div>
+            <FilterDropdown
+              label="소속"
+              value={selectedAffiliations}
+              options={affiliationOptions}
+              onChange={setSelectedAffiliations}
+              popoverWidth={260}
+            />
 
-            <div className="relative shrink-0">
-              <select
-                value={filterRole}
-                onChange={(e) => setFilterRole(e.target.value)}
-                className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-              >
-                <option value="전체">권한: 전체</option>
-                {MEMBER_ROLES.map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-            </div>
+            <FilterDropdown
+              label="권한"
+              value={selectedRoles}
+              options={MEMBER_ROLES}
+              onChange={setSelectedRoles}
+              popoverWidth={240}
+            />
 
-            <div className="relative shrink-0">
-              <select
-                value={filterCategory}
-                onChange={(e) => setFilterCategory(e.target.value)}
-                className="appearance-none bg-white hover:bg-slate-50 border border-slate-200 pl-3.5 pr-8 py-1.5 text-xs font-bold text-slate-700 rounded-lg focus:outline-none focus:border-violet-500 transition-colors cursor-pointer"
-              >
-                <option value="전체">카테고리: 전체</option>
-                {MEMBER_CATEGORIES.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-2.5 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-            </div>
+            <FilterDropdown
+              label="국가"
+              value={selectedCountries}
+              options={MEMBER_COUNTRIES}
+              onChange={setSelectedCountries}
+              popoverWidth={200}
+            />
           </div>
 
           <span className="text-[11px] text-slate-400 font-extrabold font-mono uppercase tracking-wide whitespace-nowrap shrink-0 self-end lg:self-center">
@@ -351,13 +351,13 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
               </div>
 
               <div className="space-y-1">
-                <label className="font-bold text-slate-600 block">카테고리</label>
+                <label className="font-bold text-slate-600 block">국가</label>
                 <select
                   className="w-full p-2 border border-slate-200 bg-white rounded-lg font-bold text-slate-800"
                   value={newMember.category}
                   onChange={(e) => setNewMember((prev) => ({ ...prev, category: e.target.value }))}
                 >
-                  {MEMBER_CATEGORIES.map((c) => (
+                  {MEMBER_COUNTRIES.map((c) => (
                     <option key={c} value={c}>{c}</option>
                   ))}
                 </select>
@@ -490,13 +490,13 @@ export default function MemberManagerView({ members, onSave }: MemberManagerView
               </div>
 
               <div className="space-y-1 col-span-2">
-                <label className="font-bold text-slate-600 block">카테고리</label>
+                <label className="font-bold text-slate-600 block">국가</label>
                 <select
                   className="w-full p-2 border border-slate-200 bg-white rounded-lg font-bold text-slate-800"
                   value={editingMember.category || '한국'}
                   onChange={(e) => setEditingMember((prev) => (prev ? { ...prev, category: e.target.value } : null))}
                 >
-                  {MEMBER_CATEGORIES.map((c) => (
+                  {MEMBER_COUNTRIES.map((c) => (
                     <option key={c} value={c}>{c}</option>
                   ))}
                 </select>

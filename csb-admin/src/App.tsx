@@ -13,6 +13,7 @@ import MemberManagerView from './components/MemberManagerView';
 import PendingMemberView from './components/PendingMemberView';
 import BrandManagerView from './components/BrandManagerView';
 import RentalManagerView from './components/RentalManagerView';
+import RentalActionView from './components/RentalActionView';
 import CategoryManagerView from './components/CategoryManagerView';
 import ContentRepositoryView from './components/ContentRepositoryView';
 import LoginView from './components/LoginView';
@@ -21,7 +22,7 @@ import logoUrl from './assets/logo.png';
 const AUTH_STORAGE_KEY = 'csb_auth_member_id';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rental_status' | 'rental_documents' | 'contents' | 'categories' | 'settings_pending' | 'settings_users' | 'settings_brands'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'samples' | 'rental_action' | 'rental_status' | 'rental_documents' | 'contents' | 'categories' | 'settings_pending' | 'settings_users' | 'settings_brands'>('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({});
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -236,6 +237,7 @@ export default function App() {
                   icon: Activity,
                   defaultChild: 'rental_status',
                   children: [
+                    { id: 'rental_action', label: '대여/반납하기', icon: ShoppingCart },
                     { id: 'rental_status', label: '대여/반납 현황', icon: History },
                     { id: 'rental_documents', label: '문서함', icon: FileText },
                   ],
@@ -419,6 +421,7 @@ export default function App() {
             <option value="upload">⬆️ 업로드 (일괄 의류 매칭)</option>
             <option value="samples">📂 상품관리 (샘플 대장)</option>
             <option value="categories">🗂️ 카테고리 관리</option>
+            <option value="rental_action">🛒 대여/반납하기</option>
             <option value="rental_status">📋 대여/반납 현황</option>
             <option value="rental_documents">📁 문서함</option>
             <option value="contents">📚 콘텐츠 저장소</option>
@@ -605,9 +608,10 @@ export default function App() {
                   </div>
                 )}
 
-                {['rental_status', 'rental_documents'].includes(activeTab) && (
+                {['rental_action', 'rental_status', 'rental_documents'].includes(activeTab) && (
                   <div className="flex border-b border-slate-200 mb-6 overflow-x-auto" id="rental-subtabs">
                     {[
+                      { id: 'rental_action', label: '대여/반납하기', icon: ShoppingCart },
                       { id: 'rental_status', label: '대여/반납 현황', icon: History },
                       { id: 'rental_documents', label: '문서함', icon: FileText },
                     ].map((tab) => {
@@ -654,8 +658,21 @@ export default function App() {
                   </div>
                 )}
 
-                {['rental_status', 'rental_documents'].includes(activeTab) && (
+                {['rental_action', 'rental_status', 'rental_documents'].includes(activeTab) && (
                   <>
+                    <div
+                      id="rentals-action-subview-frame"
+                      className={activeTab === 'rental_action' ? '' : 'hidden'}
+                      aria-hidden={activeTab !== 'rental_action'}
+                    >
+                      <RentalActionView
+                        samples={samples}
+                        rentals={rentals}
+                        members={members}
+                        onRefreshData={handleSilentRefresh}
+                        onNavigateStatus={() => setActiveTab('rental_status')}
+                      />
+                    </div>
                     <div
                       id="rentals-subview-frame"
                       className={activeTab === 'rental_status' ? '' : 'hidden'}
