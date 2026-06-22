@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cp ../csb-admin/database.json database.json && vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=api/_server.js",
+  "outputDirectory": "dist/public",
+  "functions": {
+    "api/index.js": { "includeFiles": "database.json" }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}

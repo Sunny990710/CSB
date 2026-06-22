@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { put, list } from '@vercel/blob';
 
 dotenv.config();
 
@@ -27,9 +28,18 @@ try {
 const SEED_CANDIDATES = [
   DB_FILE,
   path.join(process.cwd(), 'database.json'),
-  path.join(MODULE_DIR, '..', 'csb-admin', 'database.json'),
   path.join(MODULE_DIR, 'database.json'),
+  path.join(MODULE_DIR, '..', 'csb-admin', 'database.json'),
+  path.join(MODULE_DIR, '..', 'database.json'),
+  '/var/task/database.json',
+  '/var/task/csb-admin/database.json',
+  '/var/task/csb-user/database.json',
 ];
+
+const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
+const USE_BLOB = !!(BLOB_TOKEN || process.env.BLOB_STORE_ID);
+const BLOB_KEY = 'database.json';
+const blobAuth = BLOB_TOKEN ? { token: BLOB_TOKEN } : {};
 
 function findSeedFile(): string | null {
   for (const p of SEED_CANDIDATES) {
@@ -91,8 +101,35 @@ function saveLocalDB(data: any): boolean {
   return true;
 }
 
+async function getBlobDB(): Promise<any> {
+  const { blobs } = await list({ prefix: BLOB_KEY, ...blobAuth });
+  const found = blobs.find((b) => b.pathname === BLOB_KEY) || blobs[0];
+  if (!found) {
+    const seed = readSeed();
+    await saveBlobDB(seed);
+    return seed;
+  }
+  const bust = `${found.url}${found.url.includes('?') ? '&' : '?'}ts=${Date.now()}`;
+  const res = await fetch(bust, { cache: 'no-store' });
+  if (!res.ok) throw new Error('Blob fetch failed: ' + res.status);
+  return await res.json();
+}
+
+async function saveBlobDB(data: any): Promise<boolean> {
+  await put(BLOB_KEY, JSON.stringify(data), {
+    access: 'public',
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    contentType: 'application/json',
+    cacheControlMaxAge: 0,
+    ...blobAuth,
+  });
+  return true;
+}
+
 async function getDB(): Promise<any> {
   try {
+    if (USE_BLOB) return await getBlobDB();
     return getLocalDB();
   } catch (err) {
     console.error('Error reading database:', err);
@@ -102,6 +139,7 @@ async function getDB(): Promise<any> {
 
 async function saveDB(data: any): Promise<boolean> {
   try {
+    if (USE_BLOB) return await saveBlobDB(data);
     return saveLocalDB(data);
   } catch (err) {
     console.error('Error writing database:', err);
@@ -217,6 +255,19 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/db', async (_req, res) => {
   try {
+    if (USE_BLOB) {
+      const { blobs } = await list({ prefix: BLOB_KEY, ...blobAuth });
+      let found = blobs.find((b) => b.pathname === BLOB_KEY) || blobs[0];
+      if (!found) {
+        await saveBlobDB(readSeed());
+        const again = await list({ prefix: BLOB_KEY, ...blobAuth });
+        found = again.blobs.find((b) => b.pathname === BLOB_KEY) || again.blobs[0];
+      }
+      if (found) {
+        const bust = `${found.url}${found.url.includes('?') ? '&' : '?'}ts=${Date.now()}`;
+        return res.redirect(302, bust);
+      }
+    }
     return res.json(await getDB());
   } catch (err) {
     console.error('GET /api/db error:', err);
@@ -465,9 +516,13 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start user server:', err);
-  process.exit(1);
-});
+// Vercel(서버리스) 환경에서는 app.listen()을 호출하지 않고 app만 내보낸다.
+// 정적 파일 서빙은 vercel.json 라우팅이 담당한다.
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error('Failed to start user server:', err);
+    process.exit(1);
+  });
+}
 
 export default app;
