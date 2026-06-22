@@ -42,7 +42,8 @@ export interface Sample {
   year?: string;            // 연도 (e.g., 2026)
   month?: string;           // 달
   views?: number;           // 조회수
-  topic?: string;           // 주제
+  topic?: string;           // 주제 (오리지널 세부 카테고리 등)
+  subCategory?: string;       // 세부 카테고리 (오리지널: 소품, 캐주얼 등)
   classification?: string;  // 분류 (e.g., 셔츠, 블라우스(PCCAI03))
   itemType?: string;        // 아이템
   hangeringNo?: string;     // 행거링번호

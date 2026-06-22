@@ -1,24 +1,45 @@
 import { Sample, sampleStatusLabel } from '@/types';
+import { sampleMatchesColor } from './colorPalette';
+import { sampleMatchesSeason } from './seasonFilter';
+import { matchesMultiFilter, matchesMultiFilterExact } from './filterMultiSelect';
+import { sampleMatchesOriginalSubCategory } from './originalSubCategory';
+import { DetailOptionFilters, EMPTY_DETAIL_OPTION_FILTERS, sampleMatchesDetailOptions } from './detailOptions';
 
 export interface SampleFilters {
   query: string;
-  brand: string;
-  category: string;
-  country: string;
-  gender: string;
-  season: string;
+  regDateFrom: string;
+  regDateTo: string;
+  brand: string[];
+  category: string[];
+  originalSubCategory: string | null;
+  originalSubCategoryItem: string | null;
+  color: string[];
+  gender: string[];
+  season: string[];
+  registerer: string[];
   status: string;
+  detailOptions: DetailOptionFilters;
 }
 
 export const DEFAULT_FILTERS: SampleFilters = {
   query: '',
-  brand: '전체',
-  category: '전체',
-  country: '전체',
-  gender: '전체',
-  season: '전체',
+  regDateFrom: '',
+  regDateTo: '',
+  brand: [],
+  category: [],
+  originalSubCategory: null,
+  originalSubCategoryItem: null,
+  color: [],
+  gender: [],
+  season: [],
+  registerer: [],
   status: '전체',
+  detailOptions: { ...EMPTY_DETAIL_OPTION_FILTERS },
 };
+
+function getRegDateKey(regDate?: string) {
+  return (regDate || '').substring(0, 10);
+}
 
 export function uniqueValues(samples: Sample[], key: keyof Sample): string[] {
   const set = new Set<string>();
@@ -34,11 +55,30 @@ export function filterSamples(samples: Sample[], filters: SampleFilters): Sample
   return samples.filter((s) => {
     if (s.useYn !== '사용') return false;
     if (filters.status !== '전체' && s.status !== filters.status) return false;
-    if (filters.brand !== '전체' && s.brand !== filters.brand) return false;
-    if (filters.category !== '전체' && s.category !== filters.category) return false;
-    if (filters.country !== '전체' && s.country !== filters.country) return false;
-    if (filters.gender !== '전체' && s.gender !== filters.gender) return false;
-    if (filters.season !== '전체' && s.season !== filters.season) return false;
+    if (!matchesMultiFilterExact(filters.brand, s.brand)) return false;
+    if (!matchesMultiFilterExact(filters.category, s.category)) return false;
+    if (
+      filters.originalSubCategory &&
+      s.category === '오리지널' &&
+      !sampleMatchesOriginalSubCategory(s, [filters.originalSubCategory])
+    ) {
+      return false;
+    }
+    if (
+      filters.originalSubCategoryItem &&
+      s.category === '오리지널' &&
+      !sampleMatchesOriginalSubCategory(s, [filters.originalSubCategoryItem])
+    ) {
+      return false;
+    }
+    if (!matchesMultiFilter(filters.color, (c) => sampleMatchesColor(s.color, c))) return false;
+    if (!matchesMultiFilterExact(filters.gender, s.gender)) return false;
+    if (!matchesMultiFilter(filters.season, (season) => sampleMatchesSeason(s.season, season))) return false;
+    if (!matchesMultiFilterExact(filters.registerer, s.registerer)) return false;
+    const sampleDate = getRegDateKey(s.regDate);
+    if (filters.regDateFrom && (!sampleDate || sampleDate < filters.regDateFrom)) return false;
+    if (filters.regDateTo && (!sampleDate || sampleDate > filters.regDateTo)) return false;
+    if (!sampleMatchesDetailOptions(s, filters.detailOptions)) return false;
     if (!q) return true;
     const hay = [
       s.code,

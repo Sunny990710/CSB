@@ -3,6 +3,8 @@ import { Plus, Check } from 'lucide-react';
 import { Sample } from '@/types';
 import SampleImage from './SampleImage';
 import { StatusBadge } from './StatusChipBar';
+import { getDisplayRentalFee } from '../utils/constants';
+import { canAddSampleToLocker } from '../utils/lockerHelpers';
 
 interface SampleCardProps {
   sample: Sample;
@@ -23,8 +25,7 @@ export default function SampleCard({
   selected,
   onToggleSelect,
 }: SampleCardProps) {
-  const fee = Number(sample.rentalFee ?? sample.price ?? 0);
-  const feeLabel = Number.isFinite(fee) ? fee.toLocaleString() : '0';
+  const feeLabel = getDisplayRentalFee(sample).toLocaleString();
 
   return (
     <article className="bg-white border border-slate-200 rounded-2xl overflow-hidden hover:shadow-md transition-shadow group">
@@ -67,7 +68,7 @@ export default function SampleCard({
           <button
             type="button"
             onClick={onToggleLocker}
-            disabled={sample.status !== '대여가능' && !inLocker}
+            disabled={!canAddSampleToLocker(sample.status) && !inLocker}
             className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
               inLocker
                 ? 'bg-slate-100 text-slate-500 border border-slate-200'

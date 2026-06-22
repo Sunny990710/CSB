@@ -52,6 +52,7 @@ const EMPTY_DB = {
   categories: [],
   brands: [],
   contents: [],
+  availabilityAlerts: [],
 };
 
 function readSeed(): any {
@@ -145,6 +146,35 @@ function nextRentalId(db: any): string {
     if (!Number.isNaN(n) && n > max) max = n;
   }
   return String(max + 1);
+}
+
+function getActiveAvailabilityAlertCodes(db: any, memberId: string): string[] {
+  return (db.availabilityAlerts || [])
+    .filter((a: any) => a.memberId === memberId && a.active && !a.notifiedAt)
+    .map((a: any) => a.sampleCode);
+}
+
+function notifyAvailabilityAlerts(db: any, sampleCode: string) {
+  const sample = db.samples?.find((s: any) => s.code === sampleCode);
+  if (!sample || sample.status !== '대여가능') return;
+
+  if (!db.availabilityAlerts) db.availabilityAlerts = [];
+
+  for (const alert of db.availabilityAlerts) {
+    if (alert.sampleCode !== sampleCode || !alert.active || alert.notifiedAt) continue;
+
+    const subject = `[CSB] ${sample.name || sampleCode} 샘플 대여 가능`;
+    const content = `${alert.memberName}님, 보관함에 담아두신 ${sample.name || sampleCode}(${sampleCode}) 샘플이 대여 가능 상태가 되었습니다.`;
+
+    console.log(`[Availability Alert Email] To: ${alert.memberEmail}`);
+    console.log(`  Subject: ${subject}`);
+    console.log(`  Body: ${content}`);
+
+    alert.notifiedAt = new Date().toISOString();
+    alert.active = false;
+    alert.lastEmailSubject = subject;
+    alert.lastEmailContent = content;
+  }
 }
 
 function createRentalRecord(db: any, sample: any, member: any, rentDays: number) {
@@ -333,8 +363,78 @@ app.post('/api/rentals/return', async (req, res) => {
 
   rental.returnDate = new Date().toISOString().substring(0, 10);
   rental.status = '반납완료';
+  notifyAvailabilityAlerts(db, rental.sampleCode);
   await saveDB(db);
   res.json({ success: true, message: '반납 처리가 완료되었습니다.' });
+});
+
+app.get('/api/availability-alerts', async (req, res) => {
+  try {
+    const memberId = String(req.query.memberId || '');
+    if (!memberId) {
+      return res.status(400).json({ success: false, message: 'memberId가 필요합니다.' });
+    }
+    const db = await getDB();
+    if (!db.availabilityAlerts) db.availabilityAlerts = [];
+    res.json({ success: true, codes: getActiveAvailabilityAlertCodes(db, memberId) });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || '알림 조회 실패' });
+  }
+});
+
+app.post('/api/availability-alerts/toggle', async (req, res) => {
+  try {
+    const { memberId, memberEmail, memberName, sampleCode, sampleName } = req.body || {};
+    if (!memberId || !sampleCode || !memberEmail) {
+      return res.status(400).json({ success: false, message: '필수 정보가 누락되었습니다.' });
+    }
+
+    const db = await getDB();
+    if (!db.availabilityAlerts) db.availabilityAlerts = [];
+
+    const sample = db.samples?.find((s: any) => s.code === sampleCode);
+    if (sample?.status === '대여가능') {
+      return res.status(400).json({
+        success: false,
+        message: '이미 대여 가능한 샘플입니다.',
+      });
+    }
+
+    const existing = db.availabilityAlerts.find(
+      (a: any) => a.memberId === memberId && a.sampleCode === sampleCode && a.active && !a.notifiedAt
+    );
+
+    let subscribed = false;
+    if (existing) {
+      existing.active = false;
+      subscribed = false;
+    } else {
+      db.availabilityAlerts.push({
+        alertId: `AA-${Date.now()}`,
+        memberId,
+        memberEmail,
+        memberName: memberName || memberEmail,
+        sampleCode,
+        sampleName: sampleName || sampleCode,
+        createdAt: new Date().toISOString(),
+        notifiedAt: null,
+        active: true,
+      });
+      subscribed = true;
+    }
+
+    await saveDB(db);
+    res.json({
+      success: true,
+      subscribed,
+      codes: getActiveAvailabilityAlertCodes(db, memberId),
+      message: subscribed
+        ? `${memberEmail}로 대여 가능 시 알림을 보내드립니다.`
+        : '대여 가능 알림이 해제되었습니다.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || '알림 설정 실패' });
+  }
 });
 
 // =========================================================================

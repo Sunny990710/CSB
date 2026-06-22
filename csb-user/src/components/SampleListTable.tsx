@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, Image as ImageIcon, Plus, Check, RefreshCw } from 'lucide-react';
 import { Sample, sampleStatusLabel } from '@/types';
+import { canAddSampleToLocker } from '../utils/lockerHelpers';
 
-const TABLE_MIN_W = 'min-w-[1180px]';
+const TABLE_MIN_W = 'min-w-[1276px]';
 const TABLE_HEAD =
   'bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider font-sans text-left';
 
@@ -78,7 +79,7 @@ export default function SampleListTable({
       }
     } else {
       for (const s of paged) {
-        if (!lockerCodes.includes(s.code) && s.status === '대여가능') onToggleLocker(s.code);
+        if (!lockerCodes.includes(s.code) && canAddSampleToLocker(s.status)) onToggleLocker(s.code);
       }
     }
   };
@@ -94,12 +95,12 @@ export default function SampleListTable({
               <col className="w-[118px]" />
               <col className="w-[76px]" />
               <col className="w-[220px]" />
-              <col className="w-[88px]" />
+              <col className="w-[104px]" />
               <col className="w-[96px]" />
               <col className="w-[88px]" />
               <col className="w-[72px]" />
-              <col className="w-[148px]" />
-              <col className="w-[72px]" />
+              <col className="w-[168px]" />
+              <col className="w-[80px]" />
               <col className="w-[80px]" />
               <col className="w-[88px]" />
             </colgroup>
@@ -153,7 +154,7 @@ export default function SampleListTable({
                   const inLocker = lockerCodes.includes(sample.code);
                   const showBack = !!imageFlips[sample.id];
                   const currentImg = showBack ? sample.imgBack : sample.imgFront || sample.imgFrontClean || sample.imgFlat;
-                  const canAdd = sample.status === '대여가능' || inLocker;
+                  const canAdd = canAddSampleToLocker(sample.status) || inLocker;
 
                   return (
                     <tr
@@ -171,7 +172,7 @@ export default function SampleListTable({
                       </td>
                       <td className="py-3.5 pl-2.5 pr-1 text-left font-mono text-slate-400 text-[11px]">{rowNo}</td>
                       <td
-                        className="py-3.5 pl-1 pr-2.5 text-left font-mono font-bold text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer truncate max-w-0"
+                        className="py-3.5 pl-1 pr-2.5 text-left font-mono text-slate-600 text-[11px] cursor-pointer truncate max-w-0 hover:text-slate-800"
                         onClick={() => onOpenDetail(sample)}
                         title={sample.code}
                       >
@@ -204,8 +205,11 @@ export default function SampleListTable({
                           {sample.name || '-'}
                         </div>
                       </td>
-                      <td className="py-3.5 px-2.5 text-left">
-                        <span className="text-xs text-slate-600 bg-slate-100 py-0.5 px-2 rounded-md font-medium">
+                      <td className="py-3.5 px-2.5 text-left max-w-0 overflow-hidden">
+                        <span
+                          className="inline-block max-w-full text-xs text-slate-600 bg-slate-100 py-0.5 px-2 rounded-md font-medium whitespace-nowrap truncate"
+                          title={sample.category}
+                        >
                           {sample.category}
                         </span>
                       </td>
@@ -214,8 +218,16 @@ export default function SampleListTable({
                         {sample.specialBrand || '-'}
                       </td>
                       <td className="py-3.5 px-2.5 font-mono text-slate-600 text-[11px] text-left">{sample.locationNo || '-'}</td>
-                      <td className="py-3.5 px-2.5 text-left font-mono text-slate-400 text-[11px] whitespace-nowrap">{sample.regDate}</td>
-                      <td className="py-3.5 px-2.5 text-left text-slate-600 text-[11px] whitespace-nowrap">{sample.registerer || '-'}</td>
+                      <td className="py-3.5 px-2.5 text-left font-mono text-slate-400 text-[11px] max-w-0 overflow-hidden">
+                        <span className="block truncate" title={sample.regDate}>
+                          {sample.regDate}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-2.5 text-left text-slate-600 text-[11px] max-w-0 overflow-hidden">
+                        <span className="block truncate" title={sample.registerer || undefined}>
+                          {sample.registerer || '-'}
+                        </span>
+                      </td>
                       <td className="py-3.5 px-2.5 text-left">
                         <span
                           className={`inline-flex items-center justify-center min-w-[4.25rem] text-[11px] font-bold py-1 px-2.5 rounded-full border whitespace-nowrap ${statusBadgeClass(sample.status)}`}

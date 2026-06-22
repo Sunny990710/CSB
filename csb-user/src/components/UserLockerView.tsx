@@ -1,17 +1,21 @@
 import React, { useMemo, useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Trash2, Bell, BellRing } from 'lucide-react';
 import { Sample, sampleStatusLabel } from '@/types';
 import { DEFAULT_FILTERS, filterSamples, statusCounts, uniqueValues } from '../utils/filters';
 import SearchFilterBar from './SearchFilterBar';
 import SampleImage from './SampleImage';
 import PageHeader from './PageHeader';
+import { canSubscribeAvailabilityAlert } from '../utils/lockerHelpers';
 
 interface UserLockerViewProps {
   samples: Sample[];
   lockerCodes: string[];
+  availabilityAlertCodes: string[];
+  memberEmail: string;
   onRemove: (code: string) => void;
   onRent: (code: string) => void;
   onNavigateRental: () => void;
+  onToggleAvailabilityAlert: (sample: Sample) => void;
 }
 
 const statusColor = (status: Sample['status']) => {
@@ -24,9 +28,12 @@ const statusColor = (status: Sample['status']) => {
 export default function UserLockerView({
   samples,
   lockerCodes,
+  availabilityAlertCodes,
+  memberEmail,
   onRemove,
   onRent,
   onNavigateRental,
+  onToggleAvailabilityAlert,
 }: UserLockerViewProps) {
   const [filters, setFilters] = useState({ ...DEFAULT_FILTERS });
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('list');
@@ -50,15 +57,15 @@ export default function UserLockerView({
         onChange={setFilters}
         brands={uniqueValues(lockerSamples, 'brand')}
         categories={uniqueValues(lockerSamples, 'category')}
-        countries={uniqueValues(lockerSamples, 'country')}
         genders={uniqueValues(lockerSamples, 'gender')}
-        seasons={uniqueValues(lockerSamples, 'season')}
+        registerers={uniqueValues(lockerSamples, 'registerer')}
         resultCount={filtered.length}
         statusCounts={counts}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         searchPlaceholder="보관함 검색 (상품코드, 상품명, 브랜드, 색상, 소재)"
         countLabel="보관 수"
+        showCategoryNavigation={false}
       />
 
       {filtered.length === 0 ? (
@@ -71,24 +78,27 @@ export default function UserLockerView({
           <table className="w-full text-xs">
             <thead className="bg-slate-50 text-slate-500 font-bold">
               <tr>
-                <th className="py-3 px-4 text-left w-12">번호</th>
-                <th className="py-3 px-4 text-left">상품코드</th>
+                <th className="py-3 px-4 text-left w-12 whitespace-nowrap">번호</th>
+                <th className="py-3 px-4 text-left whitespace-nowrap">상품코드</th>
                 <th className="py-3 px-4 text-left w-16">이미지</th>
                 <th className="py-3 px-4 text-left">상품명</th>
                 <th className="py-3 px-4 text-left">카테고리</th>
                 <th className="py-3 px-4 text-left">브랜드</th>
                 <th className="py-3 px-4 text-left">위치번호</th>
                 <th className="py-3 px-4 text-left">상태</th>
-                <th className="py-3 px-4 text-right">동작</th>
+                <th className="py-3 px-4 text-center whitespace-nowrap">동작</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((sample, idx) => {
                 const canRent = sample.status === '대여가능';
+                const showAlert = canSubscribeAvailabilityAlert(sample.status);
+                const alertOn = availabilityAlertCodes.includes(sample.code);
+
                 return (
                   <tr key={sample.code} className="border-t border-slate-100">
-                    <td className="py-3 px-4 text-slate-400">{idx + 1}</td>
-                    <td className="py-3 px-4 font-mono text-indigo-600">{sample.code}</td>
+                    <td className="py-3 px-4 text-slate-400 whitespace-nowrap">{idx + 1}</td>
+                    <td className="py-3 px-4 font-mono text-slate-600 text-[11px]">{sample.code}</td>
                     <td className="py-3 px-4">
                       <SampleImage sample={sample} className="w-10 h-10 rounded-lg border border-slate-100" />
                     </td>
@@ -99,8 +109,27 @@ export default function UserLockerView({
                     <td className={`py-3 px-4 font-bold ${statusColor(sample.status)}`}>
                       {sampleStatusLabel(sample.status)}
                     </td>
-                    <td className="py-3 px-4">
-                      <div className="flex items-center justify-end gap-2">
+                    <td className="py-3 px-4 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        {showAlert && (
+                          <button
+                            type="button"
+                            onClick={() => onToggleAvailabilityAlert(sample)}
+                            className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                              alertOn
+                                ? 'border-amber-200 bg-amber-50 text-amber-600 hover:bg-amber-100'
+                                : 'border-slate-200 text-slate-400 hover:text-amber-600 hover:border-amber-200'
+                            }`}
+                            title={
+                              alertOn
+                                ? '대여 가능 알림 해제'
+                                : `대여 가능 시 ${memberEmail}로 메일 알림 받기`
+                            }
+                            aria-label={alertOn ? '대여 가능 알림 해제' : '대여 가능 알림 받기'}
+                          >
+                            {alertOn ? <BellRing className="w-3.5 h-3.5" /> : <Bell className="w-3.5 h-3.5" />}
+                          </button>
+                        )}
                         <button
                           type="button"
                           disabled={!canRent}

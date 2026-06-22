@@ -41,11 +41,11 @@ export default function UserHomeView({
       <SearchFilterBar
         filters={filters}
         onChange={setFilters}
+        catalogSamples={published}
         brands={uniqueValues(published, 'brand')}
         categories={uniqueValues(published, 'category')}
-        countries={uniqueValues(published, 'country')}
         genders={uniqueValues(published, 'gender')}
-        seasons={uniqueValues(published, 'season')}
+        registerers={uniqueValues(published, 'registerer')}
         resultCount={filtered.length}
         statusCounts={counts}
         viewMode={viewMode}

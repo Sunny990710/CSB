@@ -22,6 +22,7 @@ import UserRentalView from './components/UserRentalView';
 import UserRentalStatusView from './components/UserRentalStatusView';
 import { USER_AUTH_KEY, UserTab, DUE_SOON_DAYS } from './utils/constants';
 import { getLockerCodes, toggleLockerCode, removeLockerCode, saveLockerCodes } from './utils/locker';
+import { fetchAvailabilityAlertCodes, toggleAvailabilityAlert } from './utils/availabilityAlerts';
 import { PREVIEW_MEMBERS, PREVIEW_RENTALS, PREVIEW_SAMPLES } from './utils/mockPreviewData';
 
 export default function UserApp() {
@@ -36,6 +37,7 @@ export default function UserApp() {
   const [members, setMembers] = useState<Member[]>([]);
   const [currentUser, setCurrentUser] = useState<Member | null>(null);
   const [lockerCodes, setLockerCodes] = useState<string[]>([]);
+  const [availabilityAlertCodes, setAvailabilityAlertCodes] = useState<string[]>([]);
   const [pendingRentCodes, setPendingRentCodes] = useState<string[]>([]);
 
   const loadData = useCallback(async (options?: { silent?: boolean }) => {
@@ -78,6 +80,14 @@ export default function UserApp() {
     if (currentUser) setLockerCodes(getLockerCodes(currentUser.memberId));
   }, [currentUser]);
 
+  useEffect(() => {
+    if (!currentUser) {
+      setAvailabilityAlertCodes([]);
+      return;
+    }
+    void fetchAvailabilityAlertCodes(currentUser.memberId).then(setAvailabilityAlertCodes);
+  }, [currentUser, samples]);
+
   const handleLogin = (member: Member) => {
     setCurrentUser(member);
     localStorage.setItem(USER_AUTH_KEY, member.memberId);
@@ -107,6 +117,21 @@ export default function UserApp() {
     }
     saveLockerCodes(currentUser.memberId, next);
     setLockerCodes(next);
+  };
+
+  const handleToggleAvailabilityAlert = async (sample: Sample) => {
+    if (!currentUser) return;
+    const result = await toggleAvailabilityAlert({
+      memberId: currentUser.memberId,
+      memberEmail: currentUser.email,
+      memberName: currentUser.name,
+      sampleCode: sample.code,
+      sampleName: sample.name,
+    });
+    setAvailabilityAlertCodes(result.codes);
+    if (result.subscribed) {
+      alert(`${currentUser.email}로 대여 가능 시 알림 메일을 보내드립니다.`);
+    }
   };
 
   const myRentals = useMemo(() => {
@@ -462,12 +487,15 @@ export default function UserApp() {
                 <UserLockerView
                   samples={samples}
                   lockerCodes={lockerCodes}
+                  availabilityAlertCodes={availabilityAlertCodes}
+                  memberEmail={currentUser.email}
                   onRemove={handleRemoveLocker}
                   onRent={(code) => {
                     setPendingRentCodes([code]);
                     setActiveTab('rental');
                   }}
                   onNavigateRental={() => setActiveTab('rental')}
+                  onToggleAvailabilityAlert={handleToggleAvailabilityAlert}
                 />
               )}
             </div>

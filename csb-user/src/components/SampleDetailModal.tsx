@@ -2,7 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Sparkles, Check, Plus, Shirt, Tag, Camera } from 'lucide-react';
 import { Sample, AiTagCategory } from '@/types';
-import { StatusBadge } from './StatusChipBar';
+import StatusChipBar, { StatusBadge } from './StatusChipBar';
+import { getDisplayRentalFee, STATUS_CHIP_OPTIONS } from '../utils/constants';
+import { statusCounts } from '../utils/filters';
+import { canAddSampleToLocker } from '../utils/lockerHelpers';
 
 const AI_TAG_CATEGORIES: { key: AiTagCategory; label: string }[] = [
   { key: 'fit', label: '핏' },
@@ -14,8 +17,7 @@ const AI_TAG_CATEGORIES: { key: AiTagCategory; label: string }[] = [
 ];
 
 function formatFee(sample: Sample): string {
-  const n = Number(sample.rentalFee ?? sample.price ?? 0);
-  return Number.isFinite(n) ? n.toLocaleString() : '0';
+  return getDisplayRentalFee(sample).toLocaleString();
 }
 
 function formatCountry(country?: string): string {
@@ -65,6 +67,11 @@ export default function SampleDetailModal({
   onToggleLocker,
 }: SampleDetailModalProps) {
   const [previewSide, setPreviewSide] = useState<'front' | 'back'>('front');
+  const [similarStatusFilter, setSimilarStatusFilter] = useState('전체');
+
+  useEffect(() => {
+    setSimilarStatusFilter('전체');
+  }, [sample.code]);
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -102,9 +109,16 @@ export default function SampleDetailModal({
       })
       .filter(({ score }) => score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, 5)
+      .slice(0, 20)
       .map(({ s }) => s);
   }, [allSamples, sample]);
+
+  const similarCounts = useMemo(() => statusCounts(similar), [similar]);
+
+  const filteredSimilar = useMemo(() => {
+    if (similarStatusFilter === '전체') return similar;
+    return similar.filter((s) => s.status === similarStatusFilter);
+  }, [similar, similarStatusFilter]);
 
   const previewSrc =
     previewSide === 'front'
@@ -323,27 +337,40 @@ export default function SampleDetailModal({
                 <Sparkles className="w-3.5 h-3.5 text-violet-500" />
                 비슷한 샘플
               </h3>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-                {similar.map((s) => {
-                  const img = s.imgFrontClean || s.imgFront || s.imgFlat;
-                  return (
-                    <div key={s.code} className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
-                      <div className="relative w-full aspect-[4/5] bg-slate-50 flex items-center justify-center">
-                        {img ? (
-                          <img src={img} alt={s.name} className="w-full h-full object-cover" />
-                        ) : (
-                          <Shirt className="w-8 h-8 text-slate-200" strokeWidth={1.2} />
-                        )}
+              <StatusChipBar
+                options={STATUS_CHIP_OPTIONS.map(({ key, label }) => ({ key, label }))}
+                active={similarStatusFilter}
+                counts={similarCounts}
+                onChange={setSimilarStatusFilter}
+                showTopBorder={false}
+              />
+              {filteredSimilar.length === 0 ? (
+                <p className="text-xs text-slate-400 py-6 text-center bg-slate-50 rounded-xl border border-slate-100 mt-3">
+                  선택한 상태의 비슷한 샘플이 없습니다.
+                </p>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-3">
+                  {filteredSimilar.map((s) => {
+                    const img = s.imgFrontClean || s.imgFront || s.imgFlat;
+                    return (
+                      <div key={s.code} className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+                        <div className="relative w-full aspect-[4/5] bg-slate-50 flex items-center justify-center">
+                          {img ? (
+                            <img src={img} alt={s.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <Shirt className="w-8 h-8 text-slate-200" strokeWidth={1.2} />
+                          )}
+                        </div>
+                        <div className="p-2.5 space-y-1">
+                          <StatusBadge status={s.status} />
+                          <p className="text-[10px] font-mono font-bold text-indigo-600">{s.code}</p>
+                          <p className="text-[11px] font-bold text-slate-800 line-clamp-2 leading-snug">{s.name}</p>
+                        </div>
                       </div>
-                      <div className="p-2.5 space-y-1">
-                        <StatusBadge status={s.status} />
-                        <p className="text-[10px] font-mono font-bold text-indigo-600">{s.code}</p>
-                        <p className="text-[11px] font-bold text-slate-800 line-clamp-2 leading-snug">{s.name}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -360,7 +387,7 @@ export default function SampleDetailModal({
           <button
             type="button"
             onClick={onToggleLocker}
-            disabled={sample.status !== '대여가능' && !inLocker}
+            disabled={!canAddSampleToLocker(sample.status) && !inLocker}
             className={`inline-flex items-center justify-center gap-2 font-bold px-5 py-2 rounded-lg text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm ${
               inLocker
                 ? 'bg-slate-100 text-slate-500 border border-slate-200'
